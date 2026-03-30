@@ -9,7 +9,10 @@
       "Bash(git push:*)",
       "Bash(wc:*)",
       "Bash(grep:*)",
-      "Bash(python3:*)"
+      "Bash(python3:*)",
+      "Bash(docker:*)",
+      "Bash(docker compose:*)",
+      "Bash(docker-compose:*)"
     ]
   }
 }

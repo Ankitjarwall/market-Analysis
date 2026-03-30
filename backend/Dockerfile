@@ -7,10 +7,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     && rm -rf /var/lib/apt/lists/*
 
-COPY ../requirements.txt /requirements.txt
+# requirements.txt is copied from the project root via docker-compose build context
+COPY requirements.txt /requirements.txt
 RUN pip install --no-cache-dir -r /requirements.txt
 
-COPY . .
+COPY backend/ .
 
 ENV PYTHONPATH=/app
 ENV PYTHONUNBUFFERED=1
