@@ -1,0 +1,40 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-[#0f1117] text-gray-100;
+    margin: 0;
+    font-family: system-ui, -apple-system, sans-serif;
+  }
+  #root {
+    min-height: 100vh;
+  }
+}
+
+@layer components {
+  .card {
+    @apply bg-[#1a1d26] rounded-xl border border-[#2a2d3a] p-4;
+  }
+  .btn-primary {
+    @apply bg-green-600 hover:bg-green-500 text-white font-semibold px-4 py-2 rounded-lg transition-colors cursor-pointer;
+  }
+  .btn-danger {
+    @apply bg-red-600 hover:bg-red-500 text-white font-semibold px-4 py-2 rounded-lg transition-colors cursor-pointer;
+  }
+  .btn-ghost {
+    @apply border border-[#2a2d3a] hover:border-gray-500 text-gray-300 px-4 py-2 rounded-lg transition-colors cursor-pointer;
+  }
+  .badge {
+    @apply inline-flex items-center px-2 py-0.5 rounded text-xs font-medium;
+  }
+  .badge-green { @apply badge bg-green-900/60 text-green-300; }
+  .badge-red { @apply badge bg-red-900/60 text-red-300; }
+  .badge-yellow { @apply badge bg-yellow-900/60 text-yellow-300; }
+  .badge-blue { @apply badge bg-blue-900/60 text-blue-300; }
+  .badge-gray { @apply badge bg-gray-800 text-gray-400; }
+  .input {
+    @apply bg-[#0f1117] border border-[#2a2d3a] rounded-lg px-3 py-2 text-gray-100 focus:outline-none focus:border-green-500 w-full;
+  }
+}
