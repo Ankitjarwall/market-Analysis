@@ -1,0 +1,821 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Options Trading — Market Intelligence</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500;600&family=Space+Grotesk:wght@400;500;600;700&display=swap');
+
+  :root {
+    --bg: #07090f;
+    --bg2: #0e1117;
+    --bg3: #141820;
+    --border: rgba(255,255,255,0.07);
+    --border2: rgba(255,255,255,0.13);
+    --text: #dce4f0;
+    --muted: #5a6478;
+    --dim: #8896ad;
+    --green: #00e5a0;
+    --red: #ff4466;
+    --amber: #ffb340;
+    --blue: #3b9eff;
+    --purple: #b06bff;
+    --mono: 'IBM Plex Mono', monospace;
+    --sans: 'Space Grotesk', sans-serif;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: var(--bg); color: var(--text); font-family: var(--sans); min-height: 100vh; }
+
+  .page { max-width: 1300px; margin: 0 auto; padding: 20px; }
+
+  /* TOPBAR */
+  .topbar {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 20px;
+    background: var(--bg2);
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 20px;
+    border-radius: 10px;
+  }
+
+  .logo { font-size: 14px; font-weight: 700; color: var(--green); letter-spacing: 0.1em; font-family: var(--mono); }
+  .logo span { color: var(--muted); font-weight: 400; }
+
+  .live-badge {
+    display: flex; align-items: center; gap: 6px;
+    font-size: 10px; font-family: var(--mono);
+    color: var(--green); background: rgba(0,229,160,0.08);
+    padding: 4px 10px; border-radius: 4px;
+    border: 1px solid rgba(0,229,160,0.2);
+  }
+
+  .pulse { width: 6px; height: 6px; border-radius: 50%; background: var(--green); animation: pulse 1.5s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.2} }
+
+  /* CAPITAL INPUT STRIP */
+  .capital-strip {
+    display: flex; align-items: center; gap: 12px;
+    padding: 14px 18px;
+    background: var(--bg2);
+    border: 1px solid var(--border2);
+    border-radius: 10px;
+    margin-bottom: 20px;
+  }
+
+  .cap-label { font-size: 12px; color: var(--dim); white-space: nowrap; }
+
+  .cap-input-wrap {
+    display: flex; align-items: center; gap: 0;
+    background: var(--bg3);
+    border: 1px solid var(--border2);
+    border-radius: 7px;
+    overflow: hidden;
+    flex: 1; max-width: 280px;
+  }
+
+  .cap-prefix {
+    padding: 0 12px;
+    font-family: var(--mono);
+    font-size: 13px;
+    color: var(--green);
+    background: rgba(0,229,160,0.06);
+    height: 38px; display: flex; align-items: center;
+    border-right: 1px solid var(--border);
+  }
+
+  .cap-input {
+    background: transparent; border: none; outline: none;
+    color: var(--text); font-family: var(--mono);
+    font-size: 14px; font-weight: 500;
+    padding: 8px 12px; width: 100%;
+  }
+
+  .cap-stats {
+    display: flex; gap: 20px;
+    margin-left: 12px;
+  }
+
+  .cap-stat { font-size: 11px; font-family: var(--mono); }
+  .cap-stat-label { color: var(--muted); }
+  .cap-stat-val { color: var(--text); font-weight: 500; }
+
+  .btn-recalc {
+    padding: 8px 16px; background: var(--green); color: #000;
+    border: none; border-radius: 6px; font-weight: 700;
+    font-size: 11px; cursor: pointer; letter-spacing: 0.05em;
+    font-family: var(--mono); white-space: nowrap;
+    transition: opacity 0.15s;
+  }
+  .btn-recalc:hover { opacity: 0.85; }
+
+  /* MAIN GRID */
+  .main-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 20px; }
+
+  /* SIGNAL CARD */
+  .signal-card {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+    position: relative;
+  }
+
+  .signal-card.put-card { border-top: 3px solid var(--red); }
+  .signal-card.call-card { border-top: 3px solid var(--green); }
+
+  .signal-header {
+    padding: 14px 16px 10px;
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: flex-start; justify-content: space-between;
+  }
+
+  .signal-type-badge {
+    font-size: 11px; font-weight: 700; font-family: var(--mono);
+    padding: 4px 10px; border-radius: 4px;
+    text-transform: uppercase; letter-spacing: 0.08em;
+  }
+
+  .put-badge { background: rgba(255,68,102,0.12); color: var(--red); border: 1px solid rgba(255,68,102,0.25); }
+  .call-badge { background: rgba(0,229,160,0.1); color: var(--green); border: 1px solid rgba(0,229,160,0.2); }
+
+  .signal-time { font-size: 10px; color: var(--muted); font-family: var(--mono); }
+
+  .signal-body { padding: 14px 16px; }
+
+  .signal-strike {
+    font-size: 28px; font-weight: 700; font-family: var(--mono);
+    margin-bottom: 4px;
+  }
+
+  .put-card .signal-strike { color: var(--red); }
+  .call-card .signal-strike { color: var(--green); }
+
+  .signal-premium {
+    font-size: 12px; color: var(--dim); font-family: var(--mono); margin-bottom: 14px;
+  }
+
+  .levels-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; margin-bottom: 14px; }
+
+  .level-box {
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    padding: 10px;
+    text-align: center;
+  }
+
+  .level-label { font-size: 9px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.1em; font-family: var(--mono); margin-bottom: 4px; }
+  .level-value { font-size: 16px; font-weight: 600; font-family: var(--mono); }
+  .level-pct { font-size: 10px; font-family: var(--mono); margin-top: 2px; }
+
+  .t1-box .level-value { color: var(--amber); }
+  .t2-box .level-value { color: var(--green); }
+  .sl-box { border-color: rgba(255,68,102,0.2); background: rgba(255,68,102,0.04); }
+  .sl-box .level-value { color: var(--red); }
+
+  /* POSITION CALCULATOR */
+  .pos-calc {
+    background: var(--bg3);
+    border: 1px solid var(--border2);
+    border-radius: 8px;
+    padding: 12px 14px;
+    margin-bottom: 12px;
+  }
+
+  .pos-title { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.12em; font-family: var(--mono); margin-bottom: 10px; }
+
+  .pos-row { display: flex; justify-content: space-between; padding: 5px 0; border-bottom: 1px solid var(--border); font-size: 12px; font-family: var(--mono); }
+  .pos-row:last-child { border-bottom: none; }
+  .pos-label { color: var(--dim); }
+  .pos-val { font-weight: 500; color: var(--text); }
+  .pos-val.green { color: var(--green); }
+  .pos-val.red { color: var(--red); }
+  .pos-val.amber { color: var(--amber); }
+
+  /* SIGNAL BASIS */
+  .basis-section { margin-bottom: 12px; }
+  .basis-title { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.1em; font-family: var(--mono); margin-bottom: 6px; }
+  .basis-item { display: flex; align-items: center; gap: 6px; font-size: 11px; font-family: var(--mono); color: var(--dim); padding: 3px 0; }
+  .basis-dot { width: 4px; height: 4px; border-radius: 50%; background: var(--amber); flex-shrink: 0; }
+
+  /* CONFIDENCE BAR */
+  .conf-row { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+  .conf-label { font-size: 10px; color: var(--muted); font-family: var(--mono); white-space: nowrap; }
+  .conf-bar { flex: 1; height: 4px; background: rgba(255,255,255,0.07); border-radius: 2px; overflow: hidden; }
+  .conf-fill { height: 100%; border-radius: 2px; }
+  .conf-value { font-size: 11px; font-weight: 600; font-family: var(--mono); white-space: nowrap; }
+
+  /* ACTION BUTTONS */
+  .action-row { display: flex; gap: 8px; }
+
+  .btn-took {
+    flex: 1; padding: 10px; border-radius: 7px;
+    font-size: 12px; font-weight: 700; cursor: pointer; border: none;
+    font-family: var(--mono); letter-spacing: 0.05em;
+    transition: all 0.15s;
+  }
+
+  .put-card .btn-took { background: rgba(255,68,102,0.15); color: var(--red); border: 1px solid rgba(255,68,102,0.3); }
+  .put-card .btn-took:hover { background: rgba(255,68,102,0.25); }
+  .call-card .btn-took { background: rgba(0,229,160,0.1); color: var(--green); border: 1px solid rgba(0,229,160,0.25); }
+  .call-card .btn-took:hover { background: rgba(0,229,160,0.2); }
+
+  .btn-skip { padding: 10px 16px; background: transparent; color: var(--muted); border: 1px solid var(--border); border-radius: 7px; font-size: 11px; cursor: pointer; font-family: var(--mono); }
+
+  /* TRADE JOURNAL */
+  .journal-section {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+    margin-bottom: 20px;
+  }
+
+  .journal-header {
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: space-between;
+  }
+
+  .journal-title { font-size: 13px; font-weight: 600; }
+
+  .journal-stats { display: flex; gap: 20px; }
+  .j-stat { font-size: 11px; font-family: var(--mono); }
+  .j-stat-label { color: var(--muted); }
+
+  /* TRADE TABLE */
+  .trade-table { width: 100%; border-collapse: collapse; }
+  .trade-table th {
+    padding: 10px 14px; text-align: left;
+    font-size: 9px; color: var(--muted);
+    text-transform: uppercase; letter-spacing: 0.12em;
+    border-bottom: 1px solid var(--border);
+    font-family: var(--mono); font-weight: 500;
+  }
+
+  .trade-table td {
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--border);
+    font-size: 12px;
+    font-family: var(--mono);
+  }
+
+  .trade-table tr:last-child td { border-bottom: none; }
+  .trade-table tr:hover td { background: rgba(255,255,255,0.02); }
+
+  .type-pill {
+    padding: 2px 8px; border-radius: 3px;
+    font-size: 10px; font-weight: 600;
+    display: inline-block;
+  }
+
+  .pill-put { background: rgba(255,68,102,0.1); color: var(--red); }
+  .pill-call { background: rgba(0,229,160,0.08); color: var(--green); }
+
+  .exit-pill {
+    padding: 2px 8px; border-radius: 3px;
+    font-size: 10px; font-weight: 500;
+    display: inline-block;
+  }
+
+  .exit-t1 { background: rgba(255,179,64,0.1); color: var(--amber); }
+  .exit-t2 { background: rgba(0,229,160,0.1); color: var(--green); }
+  .exit-sl { background: rgba(255,68,102,0.1); color: var(--red); }
+  .exit-manual { background: rgba(90,100,120,0.15); color: var(--muted); }
+  .exit-open { background: rgba(59,158,255,0.1); color: var(--blue); }
+
+  .pnl-positive { color: var(--green); font-weight: 600; }
+  .pnl-negative { color: var(--red); font-weight: 600; }
+  .pnl-open { color: var(--blue); font-weight: 600; }
+
+  /* LEARNING PANEL */
+  .learning-panel {
+    background: var(--bg2);
+    border: 1px solid rgba(176,107,255,0.2);
+    border-radius: 12px;
+    overflow: hidden;
+    margin-bottom: 20px;
+  }
+
+  .learning-header {
+    padding: 14px 18px;
+    border-bottom: 1px solid rgba(176,107,255,0.15);
+    background: rgba(176,107,255,0.04);
+    display: flex; align-items: center; justify-content: space-between;
+  }
+
+  .learning-title { font-size: 13px; font-weight: 600; color: var(--purple); }
+
+  .learning-item {
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--border);
+  }
+  .learning-item:last-child { border-bottom: none; }
+
+  .learn-date { font-size: 10px; color: var(--muted); font-family: var(--mono); margin-bottom: 6px; }
+  .learn-loss { font-size: 12px; color: var(--red); font-family: var(--mono); margin-bottom: 4px; }
+  .learn-analysis { font-size: 12px; color: var(--dim); margin-bottom: 6px; line-height: 1.5; }
+  .learn-fix {
+    font-size: 11px; color: var(--purple);
+    background: rgba(176,107,255,0.07);
+    border: 1px solid rgba(176,107,255,0.15);
+    border-radius: 5px; padding: 6px 10px;
+    font-family: var(--mono);
+  }
+
+  .learn-applied {
+    margin-top: 6px;
+    font-size: 10px; color: var(--muted);
+    font-family: var(--mono);
+    display: flex; align-items: center; gap: 5px;
+  }
+
+  /* DAILY PNL SUMMARY */
+  .daily-summary {
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px;
+    margin-bottom: 20px;
+  }
+
+  .summary-card {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px 16px;
+  }
+
+  .sum-label { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.1em; font-family: var(--mono); margin-bottom: 6px; }
+  .sum-value { font-size: 22px; font-weight: 700; font-family: var(--mono); }
+  .sum-sub { font-size: 11px; color: var(--muted); font-family: var(--mono); margin-top: 3px; }
+</style>
+</head>
+<body>
+
+<div class="page">
+
+  <!-- TOPBAR -->
+  <div class="topbar">
+    <div class="logo">MarketAI <span>/ Options Trading</span></div>
+    <div style="display:flex;align-items:center;gap:12px;">
+      <div style="font-size:11px;color:var(--muted);font-family:var(--mono);">Nifty: <span style="color:var(--red)">22,820 ▼</span></div>
+      <div style="font-size:11px;color:var(--muted);font-family:var(--mono);">VIX: <span style="color:var(--amber)">18.2</span></div>
+      <div style="font-size:11px;color:var(--muted);font-family:var(--mono);">PCR: <span style="color:var(--amber)">0.82</span></div>
+      <div class="live-badge"><div class="pulse"></div>NSE OPEN · 11:47</div>
+    </div>
+  </div>
+
+  <!-- CAPITAL INPUT -->
+  <div class="capital-strip">
+    <div class="cap-label">Your trading capital</div>
+    <div class="cap-input-wrap">
+      <div class="cap-prefix">₹</div>
+      <input type="text" class="cap-input" id="capitalInput" value="2,00,000" oninput="recalculate()">
+    </div>
+    <div class="cap-stats">
+      <div class="cap-stat">
+        <span class="cap-stat-label">Max risk/trade: </span>
+        <span class="cap-stat-val" id="maxRisk">₹4,000</span>
+      </div>
+      <div class="cap-stat">
+        <span class="cap-stat-label">Max deployed: </span>
+        <span class="cap-stat-val" id="maxDeploy">₹40,000</span>
+      </div>
+      <div class="cap-stat">
+        <span class="cap-stat-label">Today P&L: </span>
+        <span class="cap-stat-val" style="color:var(--green)" id="todayPnl">+₹3,912</span>
+      </div>
+    </div>
+    <button class="btn-recalc" onclick="recalculate()">↻ Recalculate</button>
+  </div>
+
+  <!-- DAILY SUMMARY -->
+  <div class="daily-summary">
+    <div class="summary-card">
+      <div class="sum-label">Today's P&L</div>
+      <div class="sum-value" style="color:var(--green)">+₹3,912</div>
+      <div class="sum-sub">After charges · 2 trades</div>
+    </div>
+    <div class="summary-card">
+      <div class="sum-label">Win Rate (30d)</div>
+      <div class="sum-value" style="color:var(--amber)">62%</div>
+      <div class="sum-sub">13 wins · 8 losses</div>
+    </div>
+    <div class="summary-card">
+      <div class="sum-label">Total P&L (30d)</div>
+      <div class="sum-value" style="color:var(--green)">+₹28,450</div>
+      <div class="sum-sub">+14.2% on capital</div>
+    </div>
+    <div class="summary-card">
+      <div class="sum-label">Open Position</div>
+      <div class="sum-value" style="color:var(--blue)">3 Lots</div>
+      <div class="sum-sub">22,800 PE · +₹1,237 unrealised</div>
+    </div>
+  </div>
+
+  <!-- ACTIVE SIGNALS -->
+  <div style="font-size:12px;color:var(--muted);font-family:var(--mono);margin-bottom:10px;text-transform:uppercase;letter-spacing:0.1em;">
+    Active Signals
+  </div>
+
+  <div class="main-grid">
+
+    <!-- PUT SIGNAL (ACTIVE) -->
+    <div class="signal-card put-card">
+      <div class="signal-header">
+        <div>
+          <div class="signal-type-badge put-badge">⬇ Buy Put — Bearish</div>
+          <div style="font-size:11px;color:var(--muted);font-family:var(--mono);margin-top:5px;">Nifty 50 · Weekly · 03 Apr 2026</div>
+        </div>
+        <div style="text-align:right;">
+          <div class="signal-time">11:47 IST</div>
+          <div style="font-size:10px;color:var(--amber);font-family:var(--mono);margin-top:3px;">Valid 90 min</div>
+        </div>
+      </div>
+      <div class="signal-body">
+
+        <div class="signal-strike">22,800 PE</div>
+        <div class="signal-premium">LTP: ₹185.50 · Expiry: 3 Apr 2026</div>
+
+        <div class="levels-grid">
+          <div class="level-box t1-box">
+            <div class="level-label">Target 1</div>
+            <div class="level-value">₹240</div>
+            <div class="level-pct" style="color:var(--amber)">+29.4%</div>
+          </div>
+          <div class="level-box t2-box">
+            <div class="level-label">Target 2</div>
+            <div class="level-value">₹310</div>
+            <div class="level-pct" style="color:var(--green)">+67.1%</div>
+          </div>
+          <div class="level-box sl-box">
+            <div class="level-label">Stop Loss</div>
+            <div class="level-value">₹145</div>
+            <div class="level-pct" style="color:var(--red)">−21.8%</div>
+          </div>
+        </div>
+
+        <div style="font-size:11px;color:var(--muted);font-family:var(--mono);margin-bottom:10px;padding:8px 10px;background:rgba(255,68,102,0.05);border-radius:5px;border:1px solid rgba(255,68,102,0.1);">
+          🚪 Exit if Nifty crosses <span style="color:var(--text)">22,950</span> (invalidates bearish setup)
+        </div>
+
+        <!-- POSITION CALCULATOR -->
+        <div class="pos-calc">
+          <div class="pos-title">Position sizing · ₹2,00,000 capital</div>
+          <div class="pos-row">
+            <span class="pos-label">Recommended lots</span>
+            <span class="pos-val green" id="putLots">3 lots (75 units)</span>
+          </div>
+          <div class="pos-row">
+            <span class="pos-label">Total premium</span>
+            <span class="pos-val" id="putPremium">₹13,912</span>
+          </div>
+          <div class="pos-row">
+            <span class="pos-label">Capital deployed</span>
+            <span class="pos-val" id="putDeployed">6.96% of capital</span>
+          </div>
+          <div class="pos-row">
+            <span class="pos-label">Max loss (if SL hit)</span>
+            <span class="pos-val red" id="putMaxLoss">₹3,037 (1.52%)</span>
+          </div>
+          <div class="pos-row">
+            <span class="pos-label">Profit at Target 1</span>
+            <span class="pos-val green" id="putT1Profit">+₹4,087 (2.04%)</span>
+          </div>
+          <div class="pos-row">
+            <span class="pos-label">Profit at Target 2</span>
+            <span class="pos-val green" id="putT2Profit">+₹9,337 (4.67%)</span>
+          </div>
+          <div class="pos-row">
+            <span class="pos-label">Est. charges (R/T)</span>
+            <span class="pos-val" style="color:var(--muted)">~₹175</span>
+          </div>
+          <div class="pos-row" style="padding-top:8px;border-top:1px solid var(--border2);margin-top:4px;">
+            <span class="pos-label">Risk/Reward</span>
+            <span class="pos-val amber">1 : 2.4</span>
+          </div>
+        </div>
+
+        <!-- SIGNAL BASIS -->
+        <div class="basis-section">
+          <div class="basis-title">Signal basis</div>
+          <div class="basis-item"><div class="basis-dot"></div>Nifty below VWAP (22,905) since 10:30 AM</div>
+          <div class="basis-item"><div class="basis-dot"></div>FII net sell ₹1,847cr — 5th consecutive day</div>
+          <div class="basis-item"><div class="basis-dot"></div>VIX rising: 17.4 → 18.2 in 2 hours</div>
+          <div class="basis-item"><div class="basis-dot"></div>PCR: 0.82 (below 0.85 = bearish)</div>
+          <div class="basis-item"><div class="basis-dot"></div>Pattern match: 4/6 similar days closed red</div>
+        </div>
+
+        <!-- CONFIDENCE -->
+        <div class="conf-row">
+          <span class="conf-label">Confidence</span>
+          <div class="conf-bar">
+            <div class="conf-fill" style="width:62%;background:var(--amber);"></div>
+          </div>
+          <span class="conf-value" style="color:var(--amber)">62%</span>
+        </div>
+
+        <!-- ACTIONS -->
+        <div class="action-row">
+          <button class="btn-took" onclick="takeTrade('put')">↓ I Took This Trade</button>
+          <button class="btn-skip">Skip</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- OPEN TRADE TRACKING -->
+    <div class="signal-card put-card" style="border-top-color: var(--blue);">
+      <div class="signal-header">
+        <div>
+          <div class="signal-type-badge" style="background:rgba(59,158,255,0.1);color:var(--blue);border:1px solid rgba(59,158,255,0.2);">
+            ● Open Trade — Monitoring
+          </div>
+          <div style="font-size:11px;color:var(--muted);font-family:var(--mono);margin-top:5px;">22,800 PE · Entered 11:47 · 3 lots</div>
+        </div>
+        <div style="text-align:right;">
+          <div class="signal-time">Running 14 min</div>
+        </div>
+      </div>
+      <div class="signal-body">
+
+        <div style="display:flex;align-items:baseline;gap:10px;margin-bottom:4px;">
+          <div class="signal-strike" style="color:var(--blue)">₹203.20</div>
+          <div style="font-size:13px;color:var(--green);font-family:var(--mono)">▲ +₹17.70 (+9.5%)</div>
+        </div>
+        <div class="signal-premium">Entry: ₹185.50 · Current: ₹203.20 · 3 lots</div>
+
+        <!-- LIVE P&L -->
+        <div style="background:rgba(59,158,255,0.06);border:1px solid rgba(59,158,255,0.15);border-radius:8px;padding:12px;margin-bottom:12px;">
+          <div style="font-size:10px;color:var(--blue);font-family:var(--mono);text-transform:uppercase;letter-spacing:0.1em;margin-bottom:8px;">Unrealised P&L</div>
+          <div style="font-size:26px;font-weight:700;font-family:var(--mono);color:var(--green)">+₹1,327</div>
+          <div style="font-size:11px;color:var(--muted);font-family:var(--mono);margin-top:3px;">Before charges · +0.66% of capital</div>
+          <div style="margin-top:10px;height:4px;background:rgba(255,255,255,0.06);border-radius:2px;overflow:hidden;">
+            <div style="width:32%;height:100%;background:linear-gradient(90deg,var(--blue),var(--green));border-radius:2px;"></div>
+          </div>
+          <div style="display:flex;justify-content:space-between;font-size:9px;color:var(--muted);font-family:var(--mono);margin-top:4px;">
+            <span>Entry ₹185.50</span>
+            <span>T1 ₹240 (32% to go)</span>
+          </div>
+        </div>
+
+        <!-- ALERT LEVELS -->
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:12px;">
+          <div style="background:rgba(255,179,64,0.07);border:1px solid rgba(255,179,64,0.15);border-radius:6px;padding:8px;text-align:center;">
+            <div style="font-size:9px;color:var(--muted);font-family:var(--mono);margin-bottom:3px;">TARGET 1</div>
+            <div style="font-size:14px;font-weight:600;font-family:var(--mono);color:var(--amber)">₹240</div>
+            <div style="font-size:9px;font-family:var(--mono);color:var(--muted)">+₹4,087 net</div>
+          </div>
+          <div style="background:rgba(0,229,160,0.06);border:1px solid rgba(0,229,160,0.15);border-radius:6px;padding:8px;text-align:center;">
+            <div style="font-size:9px;color:var(--muted);font-family:var(--mono);margin-bottom:3px;">TARGET 2</div>
+            <div style="font-size:14px;font-weight:600;font-family:var(--mono);color:var(--green)">₹310</div>
+            <div style="font-size:9px;font-family:var(--mono);color:var(--muted)">+₹9,337 net</div>
+          </div>
+          <div style="background:rgba(255,68,102,0.05);border:1px solid rgba(255,68,102,0.15);border-radius:6px;padding:8px;text-align:center;">
+            <div style="font-size:9px;color:var(--muted);font-family:var(--mono);margin-bottom:3px;">STOP LOSS</div>
+            <div style="font-size:14px;font-weight:600;font-family:var(--mono);color:var(--red)">₹145</div>
+            <div style="font-size:9px;font-family:var(--mono);color:var(--muted)">−₹3,037</div>
+          </div>
+        </div>
+
+        <!-- EXIT BUTTONS -->
+        <div style="display:flex;gap:6px;flex-wrap:wrap;">
+          <button onclick="exitTrade('t1')" style="flex:1;padding:9px;background:rgba(255,179,64,0.12);color:var(--amber);border:1px solid rgba(255,179,64,0.25);border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:var(--mono);">
+            ⬆ Exit at T1 (₹240)
+          </button>
+          <button onclick="exitTrade('t2')" style="flex:1;padding:9px;background:rgba(0,229,160,0.08);color:var(--green);border:1px solid rgba(0,229,160,0.2);border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:var(--mono);">
+            ⬆ Exit at T2 (₹310)
+          </button>
+          <button onclick="exitTrade('manual')" style="padding:9px 12px;background:transparent;color:var(--muted);border:1px solid var(--border);border-radius:6px;font-size:11px;cursor:pointer;font-family:var(--mono);">
+            Manual Exit
+          </button>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <!-- TRADE JOURNAL -->
+  <div class="journal-section">
+    <div class="journal-header">
+      <div class="journal-title">Trade Journal — Today &amp; History</div>
+      <div class="journal-stats">
+        <div class="j-stat"><span class="j-stat-label">Today: </span><span style="color:var(--green)">+₹3,912</span></div>
+        <div class="j-stat"><span class="j-stat-label">Week: </span><span style="color:var(--green)">+₹9,220</span></div>
+        <div class="j-stat"><span class="j-stat-label">Month: </span><span style="color:var(--green)">+₹28,450</span></div>
+      </div>
+    </div>
+    <div style="overflow-x:auto;">
+      <table class="trade-table">
+        <thead>
+          <tr>
+            <th>Date/Time</th>
+            <th>Signal</th>
+            <th>Entry</th>
+            <th>Exit</th>
+            <th>Lots</th>
+            <th>Exit Type</th>
+            <th>Gross P&L</th>
+            <th>Charges</th>
+            <th>Net P&L</th>
+            <th>% Capital</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td style="color:var(--blue)">30 Mar 11:47 <span style="color:var(--muted)">OPEN</span></td>
+            <td><span class="type-pill pill-put">PUT</span> 22800PE</td>
+            <td>₹185.50</td>
+            <td style="color:var(--muted)">—</td>
+            <td>3</td>
+            <td><span class="exit-pill exit-open">● OPEN</span></td>
+            <td class="pnl-open">+₹1,327*</td>
+            <td style="color:var(--muted)">—</td>
+            <td class="pnl-open">+₹1,150*</td>
+            <td class="pnl-open">+0.57%</td>
+          </tr>
+          <tr>
+            <td>30 Mar 10:15</td>
+            <td><span class="type-pill pill-call">CALL</span> 23000CE</td>
+            <td>₹142.00</td>
+            <td>₹198.50</td>
+            <td>2</td>
+            <td><span class="exit-pill exit-t1">TARGET 1</span></td>
+            <td class="pnl-positive">+₹2,825</td>
+            <td style="color:var(--muted)">₹162</td>
+            <td class="pnl-positive">+₹2,663</td>
+            <td class="pnl-positive">+1.33%</td>
+          </tr>
+          <tr>
+            <td>29 Mar 14:20</td>
+            <td><span class="type-pill pill-put">PUT</span> 22900PE</td>
+            <td>₹165.00</td>
+            <td>₹128.50</td>
+            <td>3</td>
+            <td><span class="exit-pill exit-sl">STOP LOSS</span></td>
+            <td class="pnl-negative">−₹2,737</td>
+            <td style="color:var(--muted)">₹158</td>
+            <td class="pnl-negative">−₹2,895</td>
+            <td class="pnl-negative">−1.45%</td>
+          </tr>
+          <tr>
+            <td>28 Mar 11:05</td>
+            <td><span class="type-pill pill-call">CALL</span> 23100CE</td>
+            <td>₹118.00</td>
+            <td>₹205.00</td>
+            <td>4</td>
+            <td><span class="exit-pill exit-t2">TARGET 2</span></td>
+            <td class="pnl-positive">+₹8,700</td>
+            <td style="color:var(--muted)">₹210</td>
+            <td class="pnl-positive">+₹8,490</td>
+            <td class="pnl-positive">+4.25%</td>
+          </tr>
+          <tr>
+            <td>27 Mar 09:52</td>
+            <td><span class="type-pill pill-put">PUT</span> 23000PE</td>
+            <td>₹195.00</td>
+            <td>₹152.00</td>
+            <td>2</td>
+            <td><span class="exit-pill exit-sl">STOP LOSS</span></td>
+            <td class="pnl-negative">−₹2,150</td>
+            <td style="color:var(--muted)">₹140</td>
+            <td class="pnl-negative">−₹2,290</td>
+            <td class="pnl-negative">−1.15%</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- LOSS LEARNING PANEL -->
+  <div class="learning-panel">
+    <div class="learning-header">
+      <div class="learning-title">⚡ Loss Learning Engine — Auto-Improvements</div>
+      <div style="font-size:10px;color:var(--purple);font-family:var(--mono);">3 learnings applied this week</div>
+    </div>
+
+    <div class="learning-item">
+      <div class="learn-date">29 Mar 2026 · PUT 22900PE · Signal 11:15</div>
+      <div class="learn-loss">Loss: −₹2,895 (−1.45%) · Stop loss hit at 14:20</div>
+      <div class="learn-analysis">
+        Signal generated when VIX was 14.8 (below 15). Nifty reversed sharply upward after RBI Governor's informal comment at 13:45 — not captured in news feed in time. PUT signal in low-VIX environment tends to be unreliable.
+      </div>
+      <div class="learn-fix">
+        📌 Rule applied: Minimum VIX 15 now required for all PUT signals. Low VIX = low fear = market less likely to fall. Previously: no VIX minimum for PUT signals.
+      </div>
+      <div class="learn-applied">
+        <span style="color:var(--green)">✓</span> Rule applied from 30 Mar — watching effectiveness
+      </div>
+    </div>
+
+    <div class="learning-item">
+      <div class="learn-date">27 Mar 2026 · PUT 23000PE · Signal 09:35</div>
+      <div class="learn-loss">Loss: −₹2,290 (−1.15%) · Stop loss hit at 10:20</div>
+      <div class="learn-analysis">
+        Signal given too early (09:35, just 20 min after open). Market was in opening volatility phase — wide spread, direction unclear. First 30 minutes after open are unreliable for directional bets.
+      </div>
+      <div class="learn-fix">
+        📌 Rule applied: No new signals in first 30 minutes after market open (before 9:45 AM). Wait for opening range to establish.
+      </div>
+      <div class="learn-applied">
+        <span style="color:var(--green)">✓</span> Rule active since 28 Mar · No false early signals since
+      </div>
+    </div>
+
+    <div class="learning-item">
+      <div class="learn-date">24 Mar 2026 · Consecutive losses — 3 in a row</div>
+      <div class="learn-loss">Total: −₹8,200 over 3 trades · Miss category: FII_REVERSAL</div>
+      <div class="learn-analysis">
+        All 3 losses occurred when FII was net seller for only 1 day. FII reversal happens frequently after 1 sell day. Pattern: need 2+ consecutive FII sell days before bearish signal is reliable.
+      </div>
+      <div class="learn-fix">
+        📌 Rule applied: PUT signals require minimum 2 consecutive FII sell days. CALL signals require minimum 2 consecutive FII buy days. Single-day FII moves are noise.
+      </div>
+      <div class="learn-applied">
+        <span style="color:var(--green)">✓</span> Applied 25 Mar · Win rate on FII signals improved from 45% → 68%
+      </div>
+    </div>
+
+  </div>
+
+</div>
+
+<script>
+function getCapital() {
+  const raw = document.getElementById('capitalInput').value.replace(/,/g, '');
+  return parseInt(raw) || 200000;
+}
+
+function recalculate() {
+  const capital = getCapital();
+
+  // Format capital input
+  const formatted = capital.toLocaleString('en-IN');
+  document.getElementById('capitalInput').value = formatted;
+
+  // Update stats
+  document.getElementById('maxRisk').textContent = '₹' + (capital * 0.02).toLocaleString('en-IN');
+  document.getElementById('maxDeploy').textContent = '₹' + (capital * 0.20).toLocaleString('en-IN');
+
+  // Recalculate PUT position
+  const ltp = 185.50, sl = 145, t1 = 240, t2 = 310, lotSize = 25;
+  const maxRisk = capital * 0.02;
+  const riskPerLot = (ltp - sl) * lotSize;
+  const maxByRisk = Math.floor(maxRisk / riskPerLot);
+  const maxByCapital = Math.floor((capital * 0.20) / (ltp * lotSize));
+  const lots = Math.max(1, Math.min(maxByRisk, maxByCapital, 10));
+
+  document.getElementById('putLots').textContent = lots + ' lots (' + (lots * lotSize) + ' units)';
+  document.getElementById('putPremium').textContent = '₹' + (lots * ltp * lotSize).toLocaleString('en-IN', {maximumFractionDigits:0});
+  document.getElementById('putDeployed').textContent = ((lots * ltp * lotSize / capital) * 100).toFixed(2) + '% of capital';
+  document.getElementById('putMaxLoss').textContent = '₹' + (lots * riskPerLot).toLocaleString('en-IN', {maximumFractionDigits:0}) + ' (' + ((lots * riskPerLot / capital) * 100).toFixed(2) + '%)';
+  document.getElementById('putT1Profit').textContent = '+₹' + (lots * (t1 - ltp) * lotSize).toLocaleString('en-IN', {maximumFractionDigits:0}) + ' (' + ((lots * (t1 - ltp) * lotSize / capital) * 100).toFixed(2) + '%)';
+  document.getElementById('putT2Profit').textContent = '+₹' + (lots * (t2 - ltp) * lotSize).toLocaleString('en-IN', {maximumFractionDigits:0}) + ' (' + ((lots * (t2 - ltp) * lotSize / capital) * 100).toFixed(2) + '%)';
+}
+
+function takeTrade(type) {
+  alert('Trade logged as OPEN. You will be alerted when Target 1, Target 2, or Stop Loss is hit.\n\nMake sure you have actually placed the order with your broker.');
+}
+
+function exitTrade(type) {
+  const msgs = {
+    't1': 'Exit at Target 1 (₹240) logged.\nNet P&L: +₹3,912\nMark trade as closed?',
+    't2': 'Exit at Target 2 (₹310) logged.\nNet P&L: +₹9,162\nMark trade as closed?',
+    'manual': 'Enter your actual exit price:'
+  };
+
+  if(type === 'manual') {
+    const price = prompt('Enter your actual exit price (current: ₹203.20):');
+    if(price) alert('Manual exit at ₹' + price + ' logged. Trade closed.');
+    return;
+  }
+
+  if(confirm(msgs[type])) {
+    alert('✓ Trade closed and logged in journal.');
+  }
+}
+
+// Live clock update
+setInterval(() => {
+  const now = new Date();
+  const h = String(now.getHours()).padStart(2,'0');
+  const m = String(now.getMinutes()).padStart(2,'0');
+  document.querySelectorAll('.live-badge')[0].innerHTML = '<div class="pulse"></div>NSE OPEN · ' + h + ':' + m;
+}, 60000);
+
+// Simulate price movement on open trade
+let currentPremium = 203.20;
+setInterval(() => {
+  currentPremium += (Math.random() - 0.48) * 1.5;
+  currentPremium = Math.round(currentPremium * 100) / 100;
+  const entry = 185.50;
+  const diff = currentPremium - entry;
+  const pct = ((diff / entry) * 100).toFixed(1);
+  const pnlGross = Math.round(diff * 3 * 25);
+  const color = diff >= 0 ? 'var(--green)' : 'var(--red)';
+  const arrow = diff >= 0 ? '▲' : '▼';
+}, 2000);
+
+recalculate();
+</script>
+</body>
+</html>
