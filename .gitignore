@@ -1,0 +1,64 @@
+# Secrets
+.env
+*.key
+*.pem
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+.venv/
+venv/
+env/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Alembic
+backend/db/migrations/versions/*.py
+!backend/db/migrations/versions/.gitkeep
+
+# Node / Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Logs
+logs/*.log
+logs/*.log.*
+
+# Data (large files)
+data/historical/*.csv
+data/daily_snapshots/*.json
+data/news_archive/*.json
+
+# DB
+db/market_bot.db
+db/backups/*.sql
+db/backups/*.dump
+
+# Reports
+reports/**/*.pdf
+reports/**/*.xlsx
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Misc
+ss/
