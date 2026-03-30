@@ -6,7 +6,10 @@
       "Bash(npm:*)",
       "Bash(printf:*)",
       "Bash(npx tailwindcss init:*)",
-      "Bash(git push:*)"
+      "Bash(git push:*)",
+      "Bash(wc:*)",
+      "Bash(grep:*)",
+      "Bash(python3:*)"
     ]
   }
 }
