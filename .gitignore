@@ -23,9 +23,8 @@ env/
 htmlcov/
 .tox/
 
-# Alembic
-backend/db/migrations/versions/*.py
-!backend/db/migrations/versions/.gitkeep
+# Alembic — track initial migration, ignore generated revisions
+!backend/db/migrations/versions/001_initial_schema.py
 
 # Node / Frontend
 frontend/node_modules/

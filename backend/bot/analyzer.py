@@ -346,13 +346,254 @@ async def generate_morning_brief():
 
 
 async def generate_midday_brief():
+    """Generate midday session update at 12:30 PM IST."""
     logger.info("Generating midday brief...")
-    # Similar to morning brief but uses "mid" time_of_day
-    # Reuses the same pattern with time_of_day="mid"
+
+    from bot.collector import collect_all_signals
+    from bot.validator import validate_snapshot
+    from db.connection import AsyncSessionLocal
+    from db.models import Prediction, SignalRule
+    from sqlalchemy import select
+
+    data = await collect_all_signals()
+    validation = validate_snapshot(data)
+
+    async with AsyncSessionLocal() as session:
+        today_pred = await session.execute(
+            select(Prediction)
+            .where(Prediction.date == date.today())
+            .where(Prediction.time_of_day == "open")
+        )
+        morning_pred = today_pred.scalar_one_or_none()
+
+        rules_result = await session.execute(
+            select(SignalRule).where(SignalRule.is_active == True).limit(10)
+        )
+        rules = rules_result.scalars().all()
+
+    rules_text = "\n".join(f"- {r.rule_name}: {r.rule_value}" for r in rules)
+    morning_context = (
+        f"Morning prediction: {morning_pred.direction} "
+        f"{morning_pred.magnitude_low}–{morning_pred.magnitude_high}% "
+        f"(confidence {morning_pred.confidence}%)"
+        if morning_pred
+        else "No morning prediction available"
+    )
+
+    prompt = MORNING_PROMPT.format(
+        date=date.today().strftime("%A, %d %B %Y"),
+        time="12:30",
+        minutes_to_open=0,
+        fetch_time=data.get("collected_at", "N/A"),
+        gift_nifty=data.get("nifty") or "N/A",
+        gift_nifty_change=0.0,
+        nifty_prev_close=data.get("nifty") or "N/A",
+        sp500_close=data.get("sp500") or "N/A",
+        sp500_change=0.0,
+        nasdaq_change=0.0,
+        nikkei_change=0.0,
+        hangseng_change=0.0,
+        crude=data.get("crude_brent") or "N/A",
+        crude_change=0.0,
+        gold=data.get("gold") or "N/A",
+        gold_change=0.0,
+        usd_inr=data.get("usd_inr") or "N/A",
+        usd_inr_change=0.0,
+        dxy=data.get("dxy") or "N/A",
+        dxy_change=0.0,
+        us_10y=data.get("us_10y") or "N/A",
+        us_10y_change=0.0,
+        vix=data.get("india_vix") or "N/A",
+        vix_change=0.0,
+        pe=data.get("nifty_pe") or "N/A",
+        pb=data.get("nifty_pb") or "N/A",
+        div_yield=data.get("nifty_dividend_yield") or 0,
+        fii_net=data.get("fii_net") or 0,
+        fii_direction="SELL" if (data.get("fii_net") or 0) < 0 else "BUY",
+        fii_consecutive_days=1,
+        pcr=data.get("put_call_ratio") or "N/A",
+        drawdown_from_ath=0.0,
+        data_flags=validation.quality,
+        economic_events="Midday session update — market open",
+        news_items="Midday update — see morning brief for news context",
+        pattern_match_summary=morning_context,
+        recent_predictions=morning_context,
+        signal_rules=rules_text or "Default rules active",
+    )
+
+    try:
+        result = await _call_claude_json(prompt)
+
+        async with AsyncSessionLocal() as session:
+            # Upsert: skip if midday prediction already exists
+            existing = await session.execute(
+                select(Prediction)
+                .where(Prediction.date == date.today())
+                .where(Prediction.time_of_day == "mid")
+            )
+            if existing.scalar_one_or_none() is None:
+                prediction = Prediction(
+                    date=date.today(),
+                    time_of_day="mid",
+                    direction=result["direction"],
+                    magnitude_low=result.get("magnitude_low"),
+                    magnitude_high=result.get("magnitude_high"),
+                    confidence=result.get("confidence"),
+                    confidence_reason=result.get("confidence_reason"),
+                    bull_case=result.get("bull_case"),
+                    bear_case=result.get("bear_case"),
+                    key_trigger=result.get("key_trigger_to_watch"),
+                    data_quality=result.get("data_quality"),
+                    similar_days_found=result.get("similar_days_found"),
+                    prediction_basis=result.get("prediction_basis"),
+                    market_conditions_at_time=data,
+                )
+                session.add(prediction)
+                await session.commit()
+
+        from bot.telegram_sender import send_message
+        await send_message(result.get("telegram_message", "Midday brief generated"))
+
+        from websocket.live_feed import manager
+        await manager.broadcast_bot_activity(
+            f"Midday brief: {result['direction']} confidence={result.get('confidence')}%"
+        )
+        logger.info(f"Midday brief sent: {result['direction']}")
+    except Exception as exc:
+        logger.error(f"Midday brief generation failed: {exc}", exc_info=True)
 
 
 async def generate_closing_brief():
+    """Generate closing session summary at 3:35 PM IST."""
     logger.info("Generating closing brief...")
+
+    from bot.collector import collect_all_signals
+    from bot.validator import validate_snapshot
+    from db.connection import AsyncSessionLocal
+    from db.models import Prediction, Signal, SignalRule, Trade
+    from sqlalchemy import select
+
+    data = await collect_all_signals()
+    validation = validate_snapshot(data)
+
+    async with AsyncSessionLocal() as session:
+        today_preds = await session.execute(
+            select(Prediction).where(Prediction.date == date.today())
+        )
+        predictions = today_preds.scalars().all()
+
+        today_signals = await session.execute(
+            select(Signal).where(
+                Signal.timestamp >= datetime.now(tz=timezone.utc).replace(hour=0, minute=0)
+            )
+        )
+        signals = today_signals.scalars().all()
+
+        today_trades = await session.execute(
+            select(Trade).where(
+                Trade.entry_time >= datetime.now(tz=timezone.utc).replace(hour=0, minute=0)
+            )
+        )
+        trades = today_trades.scalars().all()
+
+        rules_result = await session.execute(
+            select(SignalRule).where(SignalRule.is_active == True).limit(10)
+        )
+        rules = rules_result.scalars().all()
+
+    rules_text = "\n".join(f"- {r.rule_name}: {r.rule_value}" for r in rules)
+    preds_context = "\n".join(
+        f"{p.time_of_day}: {p.direction} (confidence {p.confidence}%)"
+        for p in predictions
+    ) or "No predictions today"
+    signals_context = f"Signals today: {len(signals)} | Trades: {len(trades)}"
+    closed_pnl = sum(t.net_pnl or 0 for t in trades if t.status == "CLOSED")
+    trades_context = (
+        f"{signals_context} | Closed P&L: ₹{closed_pnl:,.0f}"
+        if trades
+        else signals_context
+    )
+
+    prompt = MORNING_PROMPT.format(
+        date=date.today().strftime("%A, %d %B %Y"),
+        time="15:35",
+        minutes_to_open=0,
+        fetch_time=data.get("collected_at", "N/A"),
+        gift_nifty=data.get("nifty") or "N/A",
+        gift_nifty_change=0.0,
+        nifty_prev_close=data.get("nifty") or "N/A",
+        sp500_close=data.get("sp500") or "N/A",
+        sp500_change=0.0,
+        nasdaq_change=0.0,
+        nikkei_change=0.0,
+        hangseng_change=0.0,
+        crude=data.get("crude_brent") or "N/A",
+        crude_change=0.0,
+        gold=data.get("gold") or "N/A",
+        gold_change=0.0,
+        usd_inr=data.get("usd_inr") or "N/A",
+        usd_inr_change=0.0,
+        dxy=data.get("dxy") or "N/A",
+        dxy_change=0.0,
+        us_10y=data.get("us_10y") or "N/A",
+        us_10y_change=0.0,
+        vix=data.get("india_vix") or "N/A",
+        vix_change=0.0,
+        pe=data.get("nifty_pe") or "N/A",
+        pb=data.get("nifty_pb") or "N/A",
+        div_yield=data.get("nifty_dividend_yield") or 0,
+        fii_net=data.get("fii_net") or 0,
+        fii_direction="SELL" if (data.get("fii_net") or 0) < 0 else "BUY",
+        fii_consecutive_days=1,
+        pcr=data.get("put_call_ratio") or "N/A",
+        drawdown_from_ath=0.0,
+        data_flags=validation.quality,
+        economic_events="Market closing — end of session",
+        news_items=trades_context,
+        pattern_match_summary=preds_context,
+        recent_predictions=preds_context,
+        signal_rules=rules_text or "Default rules active",
+    )
+
+    try:
+        result = await _call_claude_json(prompt)
+
+        async with AsyncSessionLocal() as session:
+            existing = await session.execute(
+                select(Prediction)
+                .where(Prediction.date == date.today())
+                .where(Prediction.time_of_day == "close")
+            )
+            if existing.scalar_one_or_none() is None:
+                prediction = Prediction(
+                    date=date.today(),
+                    time_of_day="close",
+                    direction=result["direction"],
+                    magnitude_low=result.get("magnitude_low"),
+                    magnitude_high=result.get("magnitude_high"),
+                    confidence=result.get("confidence"),
+                    confidence_reason=result.get("confidence_reason"),
+                    bull_case=result.get("bull_case"),
+                    bear_case=result.get("bear_case"),
+                    key_trigger=result.get("key_trigger_to_watch"),
+                    data_quality=result.get("data_quality"),
+                    similar_days_found=result.get("similar_days_found"),
+                    prediction_basis=result.get("prediction_basis"),
+                    market_conditions_at_time=data,
+                )
+                session.add(prediction)
+                await session.commit()
+
+        from bot.telegram_sender import send_message
+        await send_message(result.get("telegram_message", "Closing brief generated"))
+
+        from websocket.live_feed import manager
+        await manager.broadcast_bot_activity(
+            f"Closing brief: {result['direction']} confidence={result.get('confidence')}%"
+        )
+        logger.info(f"Closing brief sent: {result['direction']}")
+    except Exception as exc:
+        logger.error(f"Closing brief generation failed: {exc}", exc_info=True)
 
 
 async def run_daily_postmortem():
