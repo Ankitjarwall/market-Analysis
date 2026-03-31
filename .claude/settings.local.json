@@ -12,7 +12,18 @@
       "Bash(python3:*)",
       "Bash(docker:*)",
       "Bash(docker compose:*)",
-      "Bash(docker-compose:*)"
+      "Bash(docker-compose:*)",
+      "Bash(find . -type f \\\\\\( -name \"*.py\" -o -name \"*.jsx\" -o -name \"*.js\" \\\\\\) -exec wc -l {} +)",
+      "Bash(find backend/tests -name \"*.py\" -type f -exec wc -l {} +)",
+      "Bash(python -c \"import sys; sys.path.insert\\(0, ''.''\\); from config import settings; print\\(''✓ Config imports OK''\\)\")",
+      "Bash(python -c \"import sys; sys.path.insert\\(0, ''.''\\); from config import settings; print\\(''OK Config imports''\\)\")",
+      "Bash(Start-Process \"C:\\\\Program Files\\\\Docker\\\\Docker\\\\Docker Desktop.exe\")",
+      "Bash(start \"\" \"C:\\\\Program Files\\\\Docker\\\\Docker\\\\Docker Desktop.exe\")",
+      "Bash(curl -s http://localhost:8000/health)",
+      "Bash(curl -s -o /dev/null -w \"Frontend HTTP status: %{http_code}\\\\n\" http://localhost:5173/)",
+      "Bash(curl -s http://localhost:5173/)",
+      "Bash(npx --yes skills add anthropics/claude-code --skill frontend-design --agent \"Claude Code\")",
+      "Bash(curl -s http://localhost:5173)"
     ]
   }
 }

@@ -183,6 +183,75 @@ OUTPUT:
   "gates_passed": {{"vix": true, "fii": true, "timing": true, "data": true}}
 }}"""
 
+BANKNIFTY_SIGNAL_PROMPT = """You are an elite quantitative options analyst specializing in BANK NIFTY intraday options.
+Analyze the data and determine if a high-probability BUY_CALL or BUY_PUT trade exists.
+
+STRICT RULES:
+1. NEVER invent numbers — all price levels MUST come from the live options chain provided.
+2. Bank Nifty is 2-3x more volatile than Nifty 50. Your Stop Loss MUST be wide enough to survive normal intraday whipsaws (typically 0.4–0.8% of spot), but tight enough for strict risk management.
+3. R:R must be strictly >= 2.0. Calculated as: |Target1 - Entry LTP| / |Entry LTP - Stop Loss|. If you cannot achieve this, output "NONE".
+4. Select highly liquid ATM or slightly OTM strikes only. Avoid deep OTM.
+5. Confidence reflects how many of the 4 directional gates are strongly met (VIX, VWAP, FII, PCR).
+6. Output ONLY valid JSON — no markdown, no backticks, no explanation.
+
+DATA AT {time}:
+Underlying:      BANK NIFTY
+Spot Price:      {banknifty_price}
+VWAP:            {vwap}
+BankNifty vs VWAP: {bn_vs_vwap:+.2f}%
+India VIX:       {vix}
+Bank Nifty PCR:  {pcr}
+FII Today:       ₹{fii_net:,.0f}cr ({fii_direction})
+FII Streak:      {fii_consecutive} consecutive {fii_direction} days
+VIX Trend:       {vix_trend} (last 1hr)
+Nifty Spot:      {nifty_price} (for macro context)
+
+Intraday Technicals (5-min chart, ^NSEBANK):
+RSI(14):         {rsi_5m}
+EMA(9):          {ema9}
+EMA(21):         {ema21}
+Volume vs avg:   {volume_ratio:.1f}x
+
+Global Macros:
+US 10Y Yield:    {us_10y}%
+Brent Crude:     ${crude}
+USD/INR:         ₹{usd_inr}
+
+Live Bank Nifty Options Chain (ATM ± 5 strikes):
+{options_chain_relevant_strikes}
+
+Active Signal Rules (learned from losses):
+{signal_rules}
+
+Gates status:
+- VWAP check:        {vwap_gate}
+- VIX gate:          {vix_gate}
+- FII gate:          {fii_gate}
+- PCR gate:          {pcr_gate}
+- Timing (not first 30min): {time_check}
+- Timing (not last 60min):  {time_check_close}
+- Data quality:      {data_quality}
+- SL cooldown ok:    {cooldown_ok}
+
+OUTPUT EXACTLY this JSON (no other text):
+{{
+  "signal_type": "BUY_CALL|BUY_PUT|NONE",
+  "underlying": "BANKNIFTY",
+  "reason_if_none": "...",
+  "strike": 48000,
+  "option_type": "CE|PE",
+  "suggested_expiry": "03-Apr-2026",
+  "approximate_ltp": 185.5,
+  "stop_loss": 145.0,
+  "target1": 260.0,
+  "target2": 340.0,
+  "exit_condition": "Exit if BankNifty crosses 48300",
+  "rr_ratio": 2.1,
+  "confidence": 68,
+  "signal_basis": ["above_vwap", "fii_buying_3days", "vix_below_28", "high_oi_call_side"],
+  "gates_passed": {{"vix": true, "fii": true, "vwap": true, "pcr": true}}
+}}"""
+
 LOSS_ANALYSIS_PROMPT = """You are analyzing a losing options trade to extract learning.
 
 TRADE:

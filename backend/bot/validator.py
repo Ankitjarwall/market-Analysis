@@ -5,7 +5,20 @@ Data freshness and sanity validation for collected signals.
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from bot.collector import SANITY_RANGES
+SANITY_RANGES = {
+    "nifty": (15000, 40000),
+    "banknifty": (35000, 110000),
+    "sp500": (3000, 10000),
+    "crude_brent": (30, 250),
+    "gold": (1000, 5000),
+    "usd_inr": (60, 120),
+    "india_vix": (5, 100),
+    "us_10y": (0.1, 15),
+    "nifty_pe": (10, 50),
+    "put_call_ratio": (0.3, 3.0),
+    "silver": (10, 200),
+    "copper": (2, 15),
+}
 
 MAX_DATA_AGE_MINUTES = {
     "live_prices": 5,

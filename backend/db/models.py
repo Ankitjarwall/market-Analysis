@@ -3,7 +3,7 @@ All SQLAlchemy ORM models — single source of truth for the database schema.
 """
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 
 from sqlalchemy import (
     ARRAY,
@@ -117,7 +117,7 @@ class DailyMarketSnapshot(Base):
     __table_args__ = (UniqueConstraint("date", "time_of_day"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    date: Mapped[datetime.date] = mapped_column(Date, nullable=False)
+    date: Mapped[date] = mapped_column(Date, nullable=False)
     time_of_day: Mapped[str] = mapped_column(
         String(10),
         CheckConstraint("time_of_day IN ('open','mid','close')"),
@@ -182,7 +182,7 @@ class Prediction(Base):
     __table_args__ = (UniqueConstraint("date", "time_of_day"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    date: Mapped[datetime.date] = mapped_column(Date, nullable=False)
+    date: Mapped[date] = mapped_column(Date, nullable=False)
     time_of_day: Mapped[str] = mapped_column(String(10), nullable=False)
     direction: Mapped[str] = mapped_column(
         String(5),
@@ -237,7 +237,7 @@ class Signal(Base):
         nullable=False,
     )
     underlying: Mapped[str] = mapped_column(String(20), default="NIFTY50")
-    expiry: Mapped[datetime.date] = mapped_column(Date, nullable=False)
+    expiry: Mapped[date] = mapped_column(Date, nullable=False)
     strike: Mapped[int] = mapped_column(Integer, nullable=False)
     option_type: Mapped[str] = mapped_column(
         String(2), CheckConstraint("option_type IN ('CE','PE')"), nullable=False
@@ -356,7 +356,7 @@ class TradeLearning(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     trade_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("trades.id"))
     signal_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("signals.id"))
-    trade_date: Mapped[datetime.date] = mapped_column(Date, nullable=False)
+    trade_date: Mapped[date] = mapped_column(Date, nullable=False)
     loss_amount: Mapped[float] = mapped_column(Float, nullable=False)
     loss_pct: Mapped[float] = mapped_column(Float, nullable=False)
     miss_category: Mapped[str] = mapped_column(Text, nullable=False)
@@ -372,7 +372,7 @@ class TradeLearning(Base):
     signal_adjustment: Mapped[str | None] = mapped_column(Text)
     rule_change_proposed: Mapped[str | None] = mapped_column(Text)
     rule_change_applied: Mapped[bool] = mapped_column(Boolean, default=False)
-    rule_change_date: Mapped[datetime.date | None] = mapped_column(Date)
+    rule_change_date: Mapped[date | None] = mapped_column(Date)
     improvement_result: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
@@ -410,8 +410,8 @@ class SignalPerformance(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     signal_type: Mapped[str] = mapped_column(String(10), nullable=False)
     period: Mapped[str] = mapped_column(String(20), nullable=False)
-    period_start: Mapped[datetime.date] = mapped_column(Date, nullable=False)
-    period_end: Mapped[datetime.date] = mapped_column(Date, nullable=False)
+    period_start: Mapped[date] = mapped_column(Date, nullable=False)
+    period_end: Mapped[date] = mapped_column(Date, nullable=False)
     total_signals: Mapped[int] = mapped_column(Integer, default=0)
     winning_signals: Mapped[int] = mapped_column(Integer, default=0)
     losing_signals: Mapped[int] = mapped_column(Integer, default=0)
@@ -497,7 +497,7 @@ class PredictionMistake(Base):
     prediction_id: Mapped[int | None] = mapped_column(
         Integer, ForeignKey("predictions.id")
     )
-    date: Mapped[datetime.date] = mapped_column(Date, nullable=False)
+    date: Mapped[date] = mapped_column(Date, nullable=False)
     prediction_direction: Mapped[str] = mapped_column(String(5), nullable=False)
     actual_direction: Mapped[str] = mapped_column(String(5), nullable=False)
     error_size: Mapped[float] = mapped_column(Float, nullable=False)

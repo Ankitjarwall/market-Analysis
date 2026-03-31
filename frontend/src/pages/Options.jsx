@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import axios from 'axios'
 import { useAuth } from '../hooks/useAuth'
+import { useAuthStore } from '../store/authStore'
 import { useMarketStore } from '../store/marketStore'
 import SignalCard from '../components/SignalCard'
 import TradeCard from '../components/TradeCard'
@@ -9,14 +10,20 @@ const API = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
 export default function Options() {
   const { user } = useAuth()
+  const updateUser = useAuthStore(s => s.updateUser)
   const activeSignals = useMarketStore(s => s.activeSignals)
   const openTrades = useMarketStore(s => s.openTrades)
 
-  const [capital, setCapital] = useState(user?.capital || 200000)
+  const CAPITAL_MIN = 10_000        // ₹10,000 minimum
+  const CAPITAL_MAX = 10_000_000   // ₹1 crore maximum
+  const clampCapital = (v) => Math.max(CAPITAL_MIN, Math.min(CAPITAL_MAX, Math.round(Number(v) || 200_000)))
+  const [capital, setCapital] = useState(clampCapital(user?.capital))
   const [tradeMode, setTradeMode] = useState(user?.trade_mode || 'auto')
   const [tradeHistory, setTradeHistory] = useState([])
   const [loading, setLoading] = useState(true)
   const [savingCapital, setSavingCapital] = useState(false)
+  const [predHistory, setPredHistory] = useState([])
+  const [predAccuracy, setPredAccuracy] = useState(null)
 
   useEffect(() => {
     loadData()
@@ -24,14 +31,21 @@ export default function Options() {
 
   const loadData = async () => {
     try {
-      const [tradesRes, openRes, signalsRes] = await Promise.all([
+      const [tradesRes, openRes, signalsRes, settingsRes, predHistRes, predAccRes] = await Promise.all([
         axios.get(`${API}/api/trades/history?days=30`),
         axios.get(`${API}/api/trades/open`),
         axios.get(`${API}/api/signals/active`),
+        axios.get(`${API}/api/trades/capital`),
+        axios.get(`${API}/api/predictions/history?days=30`),
+        axios.get(`${API}/api/predictions/accuracy?days=30`),
       ])
       setTradeHistory(tradesRes.data.trades || [])
       useMarketStore.getState().setOpenTrades(openRes.data.trades || [])
       useMarketStore.getState().setActiveSignals(signalsRes.data.signals || [])
+      if (settingsRes.data.trade_mode) setTradeMode(settingsRes.data.trade_mode)
+      if (settingsRes.data.capital) setCapital(clampCapital(settingsRes.data.capital))
+      setPredHistory(predHistRes.data.predictions || [])
+      setPredAccuracy(predAccRes.data)
     } catch (err) {
       console.error(err)
     } finally {
@@ -40,9 +54,12 @@ export default function Options() {
   }
 
   const saveCapital = async () => {
+    const clamped = clampCapital(capital)
+    setCapital(clamped)
     setSavingCapital(true)
     try {
-      await axios.put(`${API}/api/trades/capital`, { capital: Number(capital) })
+      await axios.put(`${API}/api/trades/capital`, { capital: clamped })
+      updateUser({ capital: clamped })
     } catch (err) {
       alert('Failed to save capital')
     } finally {
@@ -54,6 +71,7 @@ export default function Options() {
     try {
       await axios.put(`${API}/api/trades/mode`, { mode })
       setTradeMode(mode)
+      updateUser({ trade_mode: mode })
     } catch (err) {
       alert('Failed to switch mode')
     }
@@ -63,7 +81,8 @@ export default function Options() {
     <div className="flex items-center justify-center h-64 text-gray-500">Loading...</div>
   )
 
-  const latestSignal = activeSignals[0] || null
+  const niftySignal = activeSignals.find(s => s.underlying !== 'BANKNIFTY') || null
+  const bnSignal = activeSignals.find(s => s.underlying === 'BANKNIFTY') || null
 
   return (
     <div className="p-4 space-y-4 max-w-2xl mx-auto">
@@ -75,18 +94,30 @@ export default function Options() {
       {/* Capital + Mode */}
       <div className="card space-y-3">
         <div>
-          <label className="text-sm text-gray-400 mb-1 block">Your Capital (₹)</label>
+          <label className="text-sm text-gray-400 mb-1 block">
+            Your Capital (₹)
+            <span className="text-gray-600 font-normal ml-2">
+              {capital >= 100000
+                ? `₹${(capital / 100000).toFixed(capital % 100000 === 0 ? 0 : 1)} lakh`
+                : `₹${Number(capital).toLocaleString('en-IN')}`}
+            </span>
+          </label>
           <div className="flex gap-2">
             <input
               type="number"
               className="input"
               value={capital}
+              min={10000}
+              max={10000000}
+              step={10000}
               onChange={e => setCapital(e.target.value)}
+              onBlur={e => setCapital(clampCapital(e.target.value))}
             />
             <button onClick={saveCapital} disabled={savingCapital} className="btn-primary shrink-0">
               {savingCapital ? '...' : 'Save'}
             </button>
           </div>
+          <p className="text-xs text-gray-600 mt-1">Min ₹10,000 · Max ₹1,00,00,000</p>
         </div>
 
         <div>
@@ -117,18 +148,37 @@ export default function Options() {
         </div>
       </div>
 
-      {/* Active signal */}
-      <div>
-        <h3 className="text-sm font-semibold text-gray-400 mb-2">Active Signal</h3>
-        {latestSignal ? (
-          <SignalCard signal={latestSignal} tradeMode={tradeMode} capital={capital} />
-        ) : (
+      {/* Active signals — split by underlying */}
+      {!niftySignal && !bnSignal ? (
+        <div>
+          <h3 className="text-sm font-semibold text-gray-400 mb-2">Active Signals</h3>
           <div className="card text-center text-gray-600 py-8">
             No active signals right now.<br/>
-            <span className="text-xs">Bot checks every 5 minutes during market hours.</span>
+            <span className="text-xs">Nifty checked :00/:10/... · Bank Nifty checked :05/:15/...</span>
           </div>
-        )}
-      </div>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {niftySignal && (
+            <div>
+              <h3 className="text-sm font-semibold text-gray-400 mb-2">
+                <span className="inline-block px-2 py-0.5 bg-blue-900/50 text-blue-300 rounded text-xs mr-2">NIFTY 50</span>
+                Active Signal
+              </h3>
+              <SignalCard signal={niftySignal} tradeMode={tradeMode} capital={capital} />
+            </div>
+          )}
+          {bnSignal && (
+            <div>
+              <h3 className="text-sm font-semibold text-gray-400 mb-2">
+                <span className="inline-block px-2 py-0.5 bg-purple-900/50 text-purple-300 rounded text-xs mr-2">BANK NIFTY</span>
+                Active Signal
+              </h3>
+              <SignalCard signal={bnSignal} tradeMode={tradeMode} capital={capital} />
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Open trades */}
       {openTrades.length > 0 && (
@@ -192,6 +242,71 @@ export default function Options() {
             </table>
           </div>
         )}
+      </div>
+
+      {/* ── Predictions section (merged from /predictions) ── */}
+      <div className="border-t border-[#2a2d3a] pt-4">
+        <h2 className="text-sm font-semibold text-gray-300 mb-3">🔮 AI Predictions</h2>
+
+        {predAccuracy && (
+          <div className="card mb-3">
+            <h3 className="text-xs font-semibold text-gray-400 mb-3">30-Day Accuracy</h3>
+            <div className="grid grid-cols-3 gap-3 text-center">
+              <div>
+                <div className="text-2xl font-bold text-white">{predAccuracy.accuracy_pct ?? '—'}%</div>
+                <div className="text-xs text-gray-500">Overall</div>
+              </div>
+              <div>
+                <div className="text-2xl font-bold text-green-400">{predAccuracy.correct ?? 0}</div>
+                <div className="text-xs text-gray-500">Correct</div>
+              </div>
+              <div>
+                <div className="text-2xl font-bold text-red-400">{predAccuracy.incorrect ?? 0}</div>
+                <div className="text-xs text-gray-500">Wrong</div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        <div className="card">
+          <h3 className="text-xs font-semibold text-gray-400 mb-3">Prediction History</h3>
+          {predHistory.length === 0 ? (
+            <div className="text-gray-600 text-sm text-center py-4">No predictions yet</div>
+          ) : (
+            <div className="space-y-2">
+              {predHistory.slice(0, 15).map(p => (
+                <div key={p.id} className="flex items-center justify-between py-2 border-b border-[#2a2d3a]/50 last:border-0">
+                  <div>
+                    <div className="text-sm">
+                      {new Date(p.date).toLocaleDateString('en-IN')}
+                      <span className={`ml-2 font-semibold
+                        ${p.direction === 'UP' ? 'text-green-400' :
+                          p.direction === 'DOWN' ? 'text-red-400' : 'text-yellow-400'}`}>
+                        {p.direction}
+                      </span>
+                      <span className="text-gray-500 text-xs ml-1">
+                        {p.magnitude_low}–{p.magnitude_high}%
+                      </span>
+                    </div>
+                    <div className="text-xs text-gray-600">{p.confidence}% confidence</div>
+                  </div>
+                  <div className="text-right">
+                    {p.was_correct !== null ? (
+                      <span className={p.was_correct ? 'text-green-400 text-lg' : 'text-red-400 text-lg'}>
+                        {p.was_correct ? '✓' : '✗'}
+                      </span>
+                    ) : (
+                      <span className="text-gray-600 text-sm">—</span>
+                    )}
+                    {p.actual_direction && (
+                      <div className="text-xs text-gray-500">actual: {p.actual_direction} ({p.actual_magnitude?.toFixed(1)}%)</div>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   )

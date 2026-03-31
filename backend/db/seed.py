@@ -45,7 +45,7 @@ async def seed_admin():
 
         # Create super admin
         admin = User(
-            email="admin@marketbot.local",
+            email="admin@marketplatform.io",
             password_hash=pwd_context.hash("Admin@123!"),
             name="Platform Admin",
             role="super_admin",
@@ -70,7 +70,7 @@ async def seed_admin():
                 session.add(rule)
 
         await session.commit()
-        print("✅ Super admin created: admin@marketbot.local / Admin@123!")
+        print("✅ Super admin created: admin@marketplatform.io / Admin@123!")
         print("✅ Default signal rules seeded")
         print("")
         print("⚠️ IMPORTANT: Change the admin password immediately after first login!")

@@ -7,6 +7,7 @@ const WS_URL = import.meta.env.VITE_WS_URL || 'ws://localhost:8000'
 export function useWebSocket() {
   const wsRef = useRef(null)
   const reconnectTimer = useRef(null)
+  const pingTimer = useRef(null)
   const token = useAuthStore(s => s.token)
   const store = useMarketStore()
 
@@ -21,12 +22,13 @@ export function useWebSocket() {
       store.setWsConnected(true)
       store.setWsError(null)
       store.addActivity('WebSocket connected')
-      // Start pinging
-      const ping = setInterval(() => {
+      // Start pinging — clear any previous interval first
+      clearInterval(pingTimer.current)
+      pingTimer.current = setInterval(() => {
         if (ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({ type: 'PING' }))
         } else {
-          clearInterval(ping)
+          clearInterval(pingTimer.current)
         }
       }, 20000)
     }
@@ -38,11 +40,12 @@ export function useWebSocket() {
       } catch (_) {}
     }
 
-    ws.onerror = (err) => {
+    ws.onerror = () => {
       store.setWsError('Connection error')
     }
 
     ws.onclose = () => {
+      clearInterval(pingTimer.current)
       store.setWsConnected(false)
       // Reconnect after 3 seconds
       reconnectTimer.current = setTimeout(connect, 3000)
@@ -53,6 +56,7 @@ export function useWebSocket() {
     connect()
     return () => {
       clearTimeout(reconnectTimer.current)
+      clearInterval(pingTimer.current)
       wsRef.current?.close()
     }
   }, [connect])
@@ -65,10 +69,12 @@ function handleEvent(msg, store) {
     case 'PRICE_UPDATE':
       store.setMarketData(msg.data || {})
       break
-    case 'SIGNAL_GENERATED':
-      store.setActiveSignals(prev => [msg.signal, ...prev].slice(0, 10))
+    case 'SIGNAL_GENERATED': {
+      const current = store.activeSignals || []
+      store.setActiveSignals([msg.signal, ...current].slice(0, 10))
       store.addActivity(`🎯 Signal: ${msg.signal?.signal_type} ${msg.signal?.strike} ${msg.signal?.option_type}`, 'SIGNAL')
       break
+    }
     case 'TRADE_OPENED':
       store.addActivity(msg.payload?.message || 'Trade opened', 'TRADE')
       break
@@ -90,6 +96,9 @@ function handleEvent(msg, store) {
       break
     case 'PNL_UPDATE':
       store.updateTradePnl(msg.payload?.trade_id, msg.payload?.unrealised_pnl, msg.payload?.current_premium)
+      break
+    case 'LOG_ENTRY':
+      if (msg.entry) store.addSystemLog(msg.entry)
       break
     default:
       break

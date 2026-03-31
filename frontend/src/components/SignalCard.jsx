@@ -15,11 +15,16 @@ export default function SignalCard({ signal, tradeMode, capital }) {
   const slPct = ltp ? ((ltp - sl) / ltp * 100).toFixed(1) : 0
   const isCall = signal.signal_type === 'BUY_CALL'
   const rrOk = signal.rr_ratio >= 2
+  const isBankNifty = signal.underlying === 'BANKNIFTY'
+  const lotSize = isBankNifty ? 15 : 25
 
   return (
     <div className={`card border-l-4 ${isCall ? 'border-l-green-500' : 'border-l-red-500'}`}>
       <div className="flex items-center justify-between mb-3">
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className={`px-2 py-0.5 rounded text-xs font-bold ${isBankNifty ? 'bg-purple-900/60 text-purple-300 border border-purple-700/50' : 'bg-blue-900/60 text-blue-300 border border-blue-700/50'}`}>
+            {isBankNifty ? 'BANK NIFTY' : 'NIFTY 50'}
+          </span>
           <span className={`font-bold text-lg ${isCall ? 'text-green-400' : 'text-red-400'}`}>
             {isCall ? '📈 BUY CALL' : '📉 BUY PUT'}
           </span>
@@ -34,7 +39,7 @@ export default function SignalCard({ signal, tradeMode, capital }) {
         <div className="bg-[#0f1117] rounded-lg p-3">
           <div className="text-xs text-gray-500 mb-1">STRIKE</div>
           <div className="font-bold text-white">{signal.strike} {signal.option_type}</div>
-          <div className="text-xs text-gray-400">LTP ₹{ltp}</div>
+          <div className="text-xs text-gray-400">LTP ₹{ltp} · {lotSize}/lot</div>
         </div>
         <div className="bg-green-900/20 rounded-lg p-3 border border-green-800/40">
           <div className="text-xs text-gray-500 mb-1">T1 / T2</div>

@@ -44,9 +44,9 @@ def do_run_migrations(connection: Connection) -> None:
 
 
 async def run_async_migrations() -> None:
-    # Override URL to use asyncpg driver
+    # Override URL to use asyncpg driver; prefer DATABASE_URL env var
     cfg = config.get_section(config.config_ini_section, {})
-    url = cfg.get("sqlalchemy.url", "")
+    url = os.environ.get("DATABASE_URL") or cfg.get("sqlalchemy.url", "")
     if url.startswith("postgresql://"):
         url = url.replace("postgresql://", "postgresql+asyncpg://", 1)
     cfg["sqlalchemy.url"] = url

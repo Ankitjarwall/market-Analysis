@@ -1,8 +1,9 @@
 import { create } from 'zustand'
 
-export const useMarketStore = create((set, get) => ({
+export const useMarketStore = create((set) => ({
   // Live market data
   marketData: {},
+  previousData: {},   // previous snapshot for delta/color computation
   lastUpdated: null,
 
   // Signals
@@ -22,12 +23,19 @@ export const useMarketStore = create((set, get) => ({
   // Heal warnings
   healWarnings: [],
 
+  // System monitor logs (real-time from backend)
+  systemLogs: [],
+
   // Connection status
   wsConnected: false,
   wsError: null,
 
   // Actions
-  setMarketData: (data) => set({ marketData: data, lastUpdated: new Date() }),
+  setMarketData: (data) => set((state) => ({
+    previousData: state.marketData,
+    marketData: data,
+    lastUpdated: new Date(),
+  })),
   setActiveSignals: (signals) => set({ activeSignals: signals }),
   setOpenTrades: (trades) => set({ openTrades: trades }),
   setTodayPrediction: (p) => set({ todayPrediction: p }),
@@ -49,6 +57,12 @@ export const useMarketStore = create((set, get) => ({
   dismissHealWarning: (id) => set((state) => ({
     healWarnings: state.healWarnings.filter(w => w.id !== id),
   })),
+
+  addSystemLog: (entry) => set((state) => ({
+    systemLogs: [entry, ...state.systemLogs].slice(0, 500),
+  })),
+
+  clearSystemLogs: () => set({ systemLogs: [] }),
 
   setWsConnected: (connected) => set({ wsConnected: connected }),
   setWsError: (err) => set({ wsError: err }),

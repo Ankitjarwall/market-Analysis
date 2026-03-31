@@ -72,7 +72,9 @@ async def process_losing_trade(trade_id: int):
         )
         session.add(learning)
 
-        # Auto-apply rule changes if confidence >= 75 and not CORRECT_SETUP_BAD_LUCK
+        # Auto-apply rule changes only after the same rule has been proposed ≥3 times
+        # in the last 7 days. A single losing trade is statistically meaningless;
+        # requiring 3 independent proposals prevents overfitting to market noise.
         if (
             analysis.get("confidence_in_analysis", 0) >= 75
             and analysis.get("miss_category") != "CORRECT_SETUP_BAD_LUCK"
@@ -81,27 +83,44 @@ async def process_losing_trade(trade_id: int):
             rule_name = analysis["rule_to_update"]
             new_value = analysis.get("new_rule_value")
             if new_value:
-                existing = await session.execute(
-                    select(SignalRule).where(SignalRule.rule_name == rule_name)
+                # Count how many times this same rule has been proposed in the last 7 days
+                from sqlalchemy import func
+                week_ago = datetime.now(timezone.utc) - timedelta(days=7)
+                proposal_count_result = await session.execute(
+                    select(func.count(TradeLearning.id))
+                    .where(TradeLearning.rule_change_proposed == rule_name)
+                    .where(TradeLearning.created_at >= week_ago)
                 )
-                rule = existing.scalar_one_or_none()
-                if rule:
-                    rule.previous_value = rule.rule_value
-                    rule.rule_value = {"value": new_value}
-                    rule.changed_by = "AI"
-                    rule.change_reason = analysis.get("expected_improvement")
-                    rule.updated_at = datetime.now(timezone.utc)
-                else:
-                    rule = SignalRule(
-                        rule_name=rule_name,
-                        rule_value={"value": new_value},
-                        changed_by="AI",
-                        change_reason=analysis.get("expected_improvement"),
-                    )
-                    session.add(rule)
+                proposal_count = proposal_count_result.scalar() or 0
 
-                learning.rule_change_applied = True
-                learning.rule_change_date = date.today()
+                if proposal_count >= 3:
+                    existing = await session.execute(
+                        select(SignalRule).where(SignalRule.rule_name == rule_name)
+                    )
+                    rule = existing.scalar_one_or_none()
+                    if rule:
+                        rule.previous_value = rule.rule_value
+                        rule.rule_value = {"value": new_value}
+                        rule.changed_by = "AI"
+                        rule.change_reason = f"Auto-applied after {proposal_count} proposals in 7 days: {analysis.get('expected_improvement')}"
+                        rule.updated_at = datetime.now(timezone.utc)
+                    else:
+                        rule = SignalRule(
+                            rule_name=rule_name,
+                            rule_value={"value": new_value},
+                            changed_by="AI",
+                            change_reason=f"Auto-applied after {proposal_count} proposals in 7 days: {analysis.get('expected_improvement')}",
+                        )
+                        session.add(rule)
+
+                    learning.rule_change_applied = True
+                    learning.rule_change_date = date.today()
+                    logger.info(f"Rule '{rule_name}' auto-applied after {proposal_count} proposals")
+                else:
+                    logger.info(
+                        f"Rule '{rule_name}' proposed ({proposal_count}/3 this week) — "
+                        f"not yet applied. Need ≥3 proposals to auto-change."
+                    )
 
         await session.commit()
 

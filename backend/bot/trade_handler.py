@@ -26,6 +26,7 @@ async def handle_new_signal(signal: dict, users: list):
         if not getattr(user, "is_active", True):
             continue
 
+        underlying = signal.get("underlying", "NIFTY50")
         signal_data = {
             "ltp": signal.get("ltp_at_signal", 0),
             "stop_loss": signal.get("stop_loss", 0),
@@ -35,11 +36,47 @@ async def handle_new_signal(signal: dict, users: list):
         }
 
         try:
-            position = calculate_position(user.capital, signal_data)
+            position = calculate_position(user.capital, signal_data, underlying=underlying)
         except ValueError:
             continue
 
         if user.trade_mode == "auto":
+            # Slippage guard: check current market price before opening the trade.
+            # If the premium has moved > 3% while Claude was processing, the R:R
+            # ratio may have deteriorated. Abort if it falls below the 2.0 minimum.
+            signal_ltp = signal.get("ltp_at_signal", 0)
+            current_ltp = await _get_current_premium(
+                signal.get("strike"), signal.get("option_type"), signal.get("expiry"),
+                underlying=underlying,
+            )
+            if current_ltp is not None and signal_ltp > 0:
+                slippage_pct = abs(current_ltp - signal_ltp) / signal_ltp
+                if slippage_pct > 0.03:
+                    # Recalculate R:R with the actual market price
+                    slipped_signal = {**signal_data, "ltp": current_ltp}
+                    try:
+                        slipped_position = calculate_position(user.capital, slipped_signal, underlying=underlying)
+                        if slipped_position["rr_ratio"] < 2.0:
+                            logger.warning(
+                                f"AUTO trade aborted for user {user.id}: "
+                                f"slippage {slippage_pct:.1%} degraded R:R to "
+                                f"{slipped_position['rr_ratio']:.2f} (min 2.0). "
+                                f"Signal LTP ₹{signal_ltp}, market now ₹{current_ltp:.1f}"
+                            )
+                            continue
+                        # R:R still ok — update to actual execution price
+                        position = slipped_position
+                        signal_ltp = current_ltp
+                        logger.info(
+                            f"AUTO trade: slippage {slippage_pct:.1%} but R:R {slipped_position['rr_ratio']:.2f} still acceptable. "
+                            f"Entry adjusted to ₹{current_ltp:.1f}"
+                        )
+                    except ValueError:
+                        logger.warning(
+                            f"AUTO trade aborted for user {user.id}: slippage {slippage_pct:.1%} made R:R invalid"
+                        )
+                        continue
+
             async with AsyncSessionLocal() as session:
                 trade = Trade(
                     signal_id=signal.get("id"),
@@ -47,7 +84,7 @@ async def handle_new_signal(signal: dict, users: list):
                     trade_mode="auto",
                     capital_at_entry=user.capital,
                     lots=position["recommended"]["lots"],
-                    entry_premium=signal["ltp_at_signal"],
+                    entry_premium=signal_ltp,
                     entry_time=datetime.now(timezone.utc),
                     rr_at_entry=position["rr_ratio"],
                     premium_total=position["recommended"]["premium"],
@@ -68,7 +105,7 @@ async def handle_new_signal(signal: dict, users: list):
             msg = (
                 f"⚡ AUTO TRADE OPENED\n"
                 f"{signal.get('strike')} {signal.get('option_type')} · "
-                f"₹{signal['ltp_at_signal']} · {trade.lots} lots\n"
+                f"₹{signal_ltp} · {trade.lots} lots\n"
                 f"T1: ₹{signal['target1']} | T2: ₹{signal['target2']} | "
                 f"SL: ₹{signal['stop_loss']}\n"
                 f"Max loss: ₹{trade.max_loss_calculated:,.0f} "
@@ -122,23 +159,50 @@ async def monitor_trade(trade_id: int):
             logger.error(f"Trade monitor error (trade_id={trade_id}): {exc}", exc_info=True)
 
 
-async def _get_current_premium(strike: int, option_type: str, expiry) -> float | None:
-    """Fetch current LTP from NSE for a specific option."""
-    import httpx
-    url = f"https://www.nseindia.com/api/option-chain-indices?symbol=NIFTY"
-    headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://www.nseindia.com/"}
+async def _get_current_premium(
+    strike: int, option_type: str, expiry, underlying: str = "NIFTY50"
+) -> float | None:
+    """
+    Fetch current LTP for a specific option contract from AngelOne.
+
+    1. Check WebSocket cache (instant — token already subscribed from prior lookup)
+    2. REST lookup via AngelOne searchScrip → subscribe → wait for first tick
+    """
+    from bot.angel_feed import (
+        is_active, get_option_ltp, lookup_and_subscribe_option, _option_token_cache,
+    )
+
+    if not is_active():
+        logger.warning("AngelOne feed not connected — cannot fetch option LTP")
+        return None
+
+    expiry_str = str(expiry) if expiry else ""
+    underlying_symbol = "BANKNIFTY" if underlying == "BANKNIFTY" else "NIFTY"
+    symbol_key = f"{underlying_symbol}{expiry_str}{strike}{option_type.upper()}"
+
+    # 1. Instant cache hit if we already subscribed this token before
+    token = _option_token_cache.get(symbol_key)
+    if token:
+        ltp = get_option_ltp(token)
+        if ltp is not None and ltp > 0:
+            return ltp
+
+    # 2. Look up token via AngelOne REST, subscribe it, then wait for first tick
     try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            await client.get("https://www.nseindia.com/", headers=headers)
-            resp = await client.get(url, headers=headers)
-            data = resp.json()
-            for record in data.get("records", {}).get("data", []):
-                if record.get("strikePrice") == strike:
-                    opt = record.get(option_type.upper(), {})
-                    if opt:
-                        return float(opt.get("lastPrice", 0))
-    except Exception:
-        pass
+        token = await lookup_and_subscribe_option(
+            strike=strike,
+            option_type=option_type.upper(),
+            expiry=expiry_str,
+            underlying=underlying_symbol,
+        )
+        if token:
+            await asyncio.sleep(0.5)  # allow first WebSocket tick to arrive
+            ltp = get_option_ltp(token)
+            if ltp is not None and ltp > 0:
+                return ltp
+    except Exception as exc:
+        logger.debug(f"AngelOne option LTP lookup failed: {exc}")
+
     return None
 
 

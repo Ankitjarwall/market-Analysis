@@ -35,12 +35,19 @@ export default function TradeCard({ trade, signal, onExit }) {
       ))
     : 0
 
+  const isBankNifty = signal?.underlying === 'BANKNIFTY'
+
   return (
     <div className="card border border-yellow-800/40">
       <div className="flex items-center justify-between mb-3">
         <div>
-          <div className="font-semibold">
-            {signal?.strike} {signal?.option_type} — {trade.lots} lots
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className={`px-1.5 py-0.5 rounded text-xs font-bold ${isBankNifty ? 'bg-purple-900/60 text-purple-300' : 'bg-blue-900/60 text-blue-300'}`}>
+              {isBankNifty ? 'BN' : 'NF'}
+            </span>
+            <span className="font-semibold">
+              {signal?.strike} {signal?.option_type} — {trade.lots} lots
+            </span>
           </div>
           <div className="text-xs text-gray-500">
             Entry ₹{trade.entry_premium} · R:R 1:{trade.rr_at_entry?.toFixed(1)}

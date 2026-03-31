@@ -147,7 +147,14 @@ async def update_capital(
     current_user: User = Depends(RequireAnalyst),
     db: AsyncSession = Depends(get_db),
 ):
-    current_user.capital = body.capital
+    # Clamp to prevent absurdly large values (e.g. scientific-notation input)
+    clamped = max(10_000, min(10_000_000, int(body.capital)))
+    if clamped != body.capital:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Capital must be between ₹10,000 and ₹1,00,00,000. Got: {body.capital}"
+        )
+    current_user.capital = clamped
     current_user.updated_at = datetime.now(timezone.utc)
     await db.commit()
     return {"capital": current_user.capital}

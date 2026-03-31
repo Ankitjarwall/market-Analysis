@@ -140,3 +140,35 @@ async def get_fii_dii(
             for r in rows
         ]
     }
+
+
+@router.get("/status")
+async def get_market_status(current_user: User = Depends(get_current_user)):
+    """Return whether NSE is currently open.
+    Combines two signals:
+      1. Time-based: is it 9:15–15:30 IST on a weekday?
+      2. Data freshness: did yfinance return a candle < 20 min old?
+    Using both handles market holidays (yfinance returns stale data on holidays).
+    """
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    from bot.scheduler import _latest_market_data
+
+    now = datetime.now(tz=ZoneInfo("Asia/Kolkata"))
+    weekday = now.weekday()  # 0=Mon, 6=Sun
+    mins = now.hour * 60 + now.minute
+    # NSE regular hours: 9:15 AM – 3:30 PM IST, Mon–Fri
+    time_based_open = (0 <= weekday <= 4) and (555 <= mins <= 930)
+    # Freshness signal from the fast-tick job (False on holidays / outside hours)
+    nse_data_fresh = bool(_latest_market_data.get("nse_market_active", False))
+    # Both must be true: within scheduled hours AND data is actually fresh
+    is_nse_open = time_based_open and nse_data_fresh
+    return {
+        "is_nse_open": is_nse_open,
+        "ist_time": now.isoformat(),
+        "ist_hour": now.hour,
+        "ist_minute": now.minute,
+        "weekday": weekday,
+        "time_based_open": time_based_open,
+        "nse_data_fresh": nse_data_fresh,
+    }

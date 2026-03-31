@@ -80,6 +80,9 @@ class ConnectionManager:
     async def broadcast_heal_warning(self, warning: dict):
         await self.broadcast({"type": "HEAL_WARNING", "warning": warning, "ts": datetime.now(timezone.utc).isoformat()})
 
+    async def broadcast_log_entry(self, entry: dict):
+        await self.broadcast({"type": "LOG_ENTRY", "entry": entry})
+
 
 manager = ConnectionManager()
 
@@ -108,6 +111,18 @@ async def websocket_market(websocket: WebSocket, token: str = ""):
             "message": "Connected to Market Intelligence Platform live feed",
             "ts": datetime.now(timezone.utc).isoformat(),
         }))
+
+        # Immediately push the latest market data so UI is populated on connect
+        try:
+            from bot.scheduler import _latest_market_data
+            if _latest_market_data:
+                await websocket.send_text(json.dumps({
+                    "type": "PRICE_UPDATE",
+                    "data": _latest_market_data,
+                    "ts": datetime.now(timezone.utc).isoformat(),
+                }, default=str))
+        except Exception:
+            pass
 
         # Keep connection alive — receive pings
         while True:

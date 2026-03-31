@@ -62,7 +62,11 @@ def calculate_position(capital: float, signal: dict, underlying: str = "NIFTY50"
     max_capital_allowed = capital * 0.20
     lots_by_risk = int(max_loss_allowed / risk_per_lot) if risk_per_lot > 0 else 1
     lots_by_capital = int(max_capital_allowed / premium_per_lot) if premium_per_lot > 0 else 1
-    rec_lots = max(1, min(lots_by_risk, lots_by_capital, 10))
+    # Dynamic cap: scales with capital so large accounts aren't capped at tiny sizes.
+    # Floor at 10 lots (₹2L capital baseline); adds 1 lot per ₹1L of capital above that.
+    # E.g.: ₹5L → 10 lots, ₹25L → 25 lots, ₹1Cr → 50 lots (hard ceiling).
+    dynamic_cap = min(50, max(10, int(capital / 100_000)))
+    rec_lots = max(1, min(lots_by_risk, lots_by_capital, dynamic_cap))
 
     recommended = {
         "lots": rec_lots,
@@ -78,11 +82,10 @@ def calculate_position(capital: float, signal: dict, underlying: str = "NIFTY50"
     t1_lots = max(1, int(rec_lots * 0.75))
     t2_lots = rec_lots - t1_lots
 
-    # Trailing SL after T1 — move SL to 70% of T1 profit from entry
-    if signal_type == "BUY_PUT":
-        trailing_sl = ltp + (reward_t1 * 0.70)
-    else:  # BUY_CALL
-        trailing_sl = ltp - (reward_t1 * 0.70)
+    # Trailing SL after T1 — lock in 70% of T1 profit.
+    # Both BUY_CALL and BUY_PUT profit when option premium rises,
+    # so trailing SL is always set ABOVE entry (entry + 70% of T1 move).
+    trailing_sl = ltp + (reward_t1 * 0.70)
 
     partial_plan = {
         "exit_at_t1_lots": t1_lots,
