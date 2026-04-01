@@ -14,7 +14,7 @@ class Settings(BaseSettings):
     # ── Auth ──
     jwt_secret_key: str = "change-me-in-production"
     jwt_algorithm: str = "HS256"
-    jwt_expire_minutes: int = 480
+    jwt_expire_minutes: int = 1440  # 24 hours
 
     # ── Anthropic ──
     anthropic_api_key: str = ""

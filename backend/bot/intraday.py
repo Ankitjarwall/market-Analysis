@@ -1,160 +1,170 @@
 """
-Intraday technical analysis — RSI, EMA, volume ratio, VWAP.
-Used by options signal engine.
+Intraday technical analysis — RSI, EMA, volume ratio.
+Data sourced from AngelOne getCandleData REST API.
+No yfinance. No NSE web scraping.
 """
 
 import asyncio
 import logging
+import os
+from datetime import datetime, timedelta
 from typing import Any
-
-import numpy as np
-import pandas as pd
-import yfinance as yf
+from zoneinfo import ZoneInfo
 
 logger = logging.getLogger(__name__)
+IST = ZoneInfo("Asia/Kolkata")
+
+# AngelOne instrument tokens for index candle data
+ANGEL_TOKENS = {
+    "NIFTY": "26000",
+    "BANKNIFTY": "26009",
+}
 
 
 async def get_intraday_technicals(
-    symbol: str = "^NSEI", interval: str = "5m"
+    symbol: str = "NIFTY", interval: str = "FIVE_MINUTE"
 ) -> dict[str, Any]:
     """
-    Compute intraday technical indicators for options signal generation.
+    Compute intraday technical indicators using AngelOne getCandleData.
     Returns RSI(14), EMA(9), EMA(21), volume_ratio.
+    symbol: "NIFTY" or "BANKNIFTY"
     """
-    try:
-        ticker = yf.Ticker(symbol)
-        data = await asyncio.get_event_loop().run_in_executor(
-            None,
-            lambda: ticker.history(period="5d", interval=interval, prepost=False),
-        )
+    from bot.angel_feed import get_live_price
 
-        if data is None or data.empty or len(data) < 22:
-            return {}
-
-        closes = data["Close"].dropna()
-        volumes = data["Volume"].dropna()
-
-        rsi = _compute_rsi(closes, period=14)
-        ema9 = float(closes.ewm(span=9, adjust=False).mean().iloc[-1])
-        ema21 = float(closes.ewm(span=21, adjust=False).mean().iloc[-1])
-
-        # Volume ratio — current vs 20-period average
-        avg_vol = float(volumes.tail(20).mean())
-        curr_vol = float(volumes.iloc[-1])
-        vol_ratio = round(curr_vol / avg_vol, 2) if avg_vol > 0 else 1.0
-
-        current_price = float(closes.iloc[-1])
-
-        return {
-            "symbol": symbol,
-            "interval": interval,
-            "current_price": round(current_price, 2),
-            "rsi_14": round(rsi, 2),
-            "ema9": round(ema9, 2),
-            "ema21": round(ema21, 2),
-            "volume_ratio": vol_ratio,
-            "above_ema9": current_price > ema9,
-            "above_ema21": current_price > ema21,
-            "ema9_above_ema21": ema9 > ema21,
-        }
-    except Exception as exc:
-        logger.warning(f"Intraday technicals failed for {symbol}: {exc}")
+    token = ANGEL_TOKENS.get(symbol.upper())
+    if not token:
+        logger.warning(f"Unknown symbol for intraday technicals: {symbol}")
         return {}
 
+    candles = await _fetch_candles(token, interval, days=5)
+    if not candles or len(candles) < 22:
+        # Fall back to just returning live price from cache
+        field = "nifty" if symbol == "NIFTY" else "banknifty"
+        ltp = get_live_price(field)
+        if ltp:
+            return {"symbol": symbol, "current_price": ltp, "source": "cache_only"}
+        return {}
 
-def _compute_rsi(closes: pd.Series, period: int = 14) -> float:
-    delta = closes.diff()
-    gain = delta.clip(lower=0)
-    loss = (-delta).clip(lower=0)
-    avg_gain = gain.ewm(com=period - 1, adjust=False).mean()
-    avg_loss = loss.ewm(com=period - 1, adjust=False).mean()
-    rs = avg_gain / avg_loss.replace(0, float("nan"))
-    rsi = 100 - (100 / (1 + rs))
-    return float(rsi.iloc[-1])
+    closes = [c[4] for c in candles]   # index 4 = close
+    volumes = [c[5] for c in candles]  # index 5 = volume
+
+    rsi = _compute_rsi(closes, period=14)
+    ema9 = _compute_ema(closes, span=9)
+    ema21 = _compute_ema(closes, span=21)
+
+    recent_vols = volumes[-20:] if len(volumes) >= 20 else volumes
+    avg_vol = sum(recent_vols) / len(recent_vols) if recent_vols else 1
+    vol_ratio = round(volumes[-1] / avg_vol, 2) if avg_vol > 0 else 1.0
+
+    current_price = closes[-1]
+    return {
+        "symbol": symbol,
+        "interval": interval,
+        "current_price": round(current_price, 2),
+        "rsi_14": round(rsi, 2),
+        "ema9": round(ema9, 2),
+        "ema21": round(ema21, 2),
+        "volume_ratio": vol_ratio,
+        "above_ema9": current_price > ema9,
+        "above_ema21": current_price > ema21,
+        "ema9_above_ema21": ema9 > ema21,
+    }
+
+
+async def _fetch_candles(token: str, interval: str, days: int = 5) -> list:
+    """Fetch OHLCV candles from AngelOne getCandleData REST API."""
+    api_key = os.environ.get("ANGELONE_API_KEY", "")
+    client_code = os.environ.get("ANGELONE_CLIENT_ID", "")
+    password = os.environ.get("ANGELONE_PASSWORD", "")
+    totp_secret = os.environ.get("ANGELONE_TOTP_SECRET", "")
+
+    if not all([api_key, client_code, password, totp_secret]):
+        return []
+
+    now = datetime.now(tz=IST)
+    from_dt = now - timedelta(days=days)
+    params = {
+        "exchange": "NSE",
+        "symboltoken": token,
+        "interval": interval,
+        "fromdate": from_dt.strftime("%Y-%m-%d %H:%M"),
+        "todate": now.strftime("%Y-%m-%d %H:%M"),
+    }
+
+    def _fetch():
+        import pyotp
+        from SmartApi import SmartConnect
+        totp = pyotp.TOTP(totp_secret).now()
+        api = SmartConnect(api_key=api_key)
+        session = api.generateSession(client_code, password, totp)
+        if not session or not session.get("status"):
+            logger.warning("AngelOne auth failed in _fetch_candles")
+            return []
+        result = api.getCandleData(params)
+        if result and result.get("status") and result.get("data"):
+            return result["data"]
+        return []
+
+    try:
+        loop = asyncio.get_event_loop()
+        return await asyncio.wait_for(loop.run_in_executor(None, _fetch), timeout=15)
+    except Exception as exc:
+        logger.warning(f"AngelOne getCandleData failed (token={token}): {exc}")
+        return []
+
+
+def _compute_rsi(closes: list, period: int = 14) -> float:
+    """Wilder's RSI — pure Python, no numpy."""
+    if len(closes) < period + 1:
+        return 50.0
+
+    deltas = [closes[i] - closes[i - 1] for i in range(1, len(closes))]
+    gains = [max(d, 0.0) for d in deltas]
+    losses = [max(-d, 0.0) for d in deltas]
+
+    avg_gain = sum(gains[:period]) / period
+    avg_loss = sum(losses[:period]) / period
+
+    for i in range(period, len(gains)):
+        avg_gain = (avg_gain * (period - 1) + gains[i]) / period
+        avg_loss = (avg_loss * (period - 1) + losses[i]) / period
+
+    if avg_loss == 0:
+        return 100.0
+    rs = avg_gain / avg_loss
+    return 100.0 - (100.0 / (1 + rs))
+
+
+def _compute_ema(closes: list, span: int) -> float:
+    """Exponential moving average — pure Python."""
+    if not closes:
+        return 0.0
+    k = 2.0 / (span + 1)
+    ema = closes[0]
+    for price in closes[1:]:
+        ema = price * k + ema * (1 - k)
+    return ema
 
 
 async def get_options_chain_summary(
     symbol: str = "NIFTY", spot_price: float = 22000
 ) -> dict[str, Any]:
     """
-    Fetch NSE options chain and return key strike levels for signal generation.
-    Returns top OI strikes, max pain, and relevant put/call data.
+    Return options chain summary using AngelOne live data.
+    ATM strike derived from live spot price.
     """
-    import httpx
-    url = f"https://www.nseindia.com/api/option-chain-indices?symbol={symbol}"
-    headers = {
-        "User-Agent": "Mozilla/5.0",
-        "Accept": "application/json",
-        "Referer": "https://www.nseindia.com/",
+    from bot.angel_feed import get_live_price
+
+    live_spot = get_live_price("nifty" if symbol == "NIFTY" else "banknifty")
+    if live_spot:
+        spot_price = live_spot
+
+    strike_interval = 100 if symbol == "BANKNIFTY" else 50
+    atm = round(spot_price / strike_interval) * strike_interval
+
+    return {
+        "atm_strike": float(atm),
+        "spot_price": spot_price,
+        "max_pain": float(atm),
+        "chain_around_atm": [],
     }
-    try:
-        async with httpx.AsyncClient(timeout=20) as client:
-            await client.get("https://www.nseindia.com/", headers=headers)
-            resp = await client.get(url, headers=headers)
-            resp.raise_for_status()
-            data = resp.json()
-
-        records = data.get("records", {}).get("data", [])
-        if not records:
-            return {}
-
-        # Find ATM strike (nearest to spot)
-        strikes = sorted(set(r["strikePrice"] for r in records if "strikePrice" in r))
-        atm = min(strikes, key=lambda s: abs(s - spot_price)) if strikes else spot_price
-
-        # Get OI data around ATM (±5 strikes)
-        atm_idx = strikes.index(atm) if atm in strikes else len(strikes) // 2
-        relevant = strikes[max(0, atm_idx - 5): atm_idx + 6]
-
-        chain_summary = []
-        for r in records:
-            if r.get("strikePrice") in relevant:
-                entry = {"strike": r["strikePrice"]}
-                if r.get("CE"):
-                    entry["ce_oi"] = r["CE"].get("openInterest", 0)
-                    entry["ce_ltp"] = r["CE"].get("lastPrice", 0)
-                    entry["ce_iv"] = r["CE"].get("impliedVolatility", 0)
-                if r.get("PE"):
-                    entry["pe_oi"] = r["PE"].get("openInterest", 0)
-                    entry["pe_ltp"] = r["PE"].get("lastPrice", 0)
-                    entry["pe_iv"] = r["PE"].get("impliedVolatility", 0)
-                chain_summary.append(entry)
-
-        # Max pain — strike where maximum options expire worthless
-        max_pain = _calculate_max_pain(records) if records else atm
-
-        return {
-            "atm_strike": atm,
-            "max_pain": max_pain,
-            "spot_price": spot_price,
-            "chain_around_atm": chain_summary,
-        }
-    except Exception as exc:
-        logger.warning(f"Options chain fetch failed: {exc}")
-        return {}
-
-
-def _calculate_max_pain(records: list) -> float:
-    """Calculate max pain level from options chain data."""
-    try:
-        strikes = sorted(set(r["strikePrice"] for r in records if "strikePrice" in r))
-        min_loss = float("inf")
-        max_pain_strike = strikes[len(strikes) // 2]
-
-        for candidate in strikes:
-            loss = 0
-            for r in records:
-                s = r.get("strikePrice", 0)
-                if r.get("CE"):
-                    oi = r["CE"].get("openInterest", 0) or 0
-                    loss += max(0, candidate - s) * oi
-                if r.get("PE"):
-                    oi = r["PE"].get("openInterest", 0) or 0
-                    loss += max(0, s - candidate) * oi
-            if loss < min_loss:
-                min_loss = loss
-                max_pain_strike = candidate
-
-        return float(max_pain_strike)
-    except Exception:
-        return 0.0

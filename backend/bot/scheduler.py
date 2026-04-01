@@ -33,13 +33,12 @@ async def start_scheduler():
         id="morning_brief", replace_existing=True,
     )
 
-    # ── Live data every 60s, 9:00–15:30 IST ──
-    # Fast prices come from job_fast_tick_prices every 10s.
-    # This job calls slow NSE APIs (FII, PCR, PE) that take 30–60s — 20s interval
-    # caused "max instances reached" spam. 60s is the minimum safe interval.
+    # ── Live data every 60s, always-on for global prices ──
+    # Indian prices come from AngelOne push (market hours only).
+    # Global indices (S&P, NASDAQ, Gold, etc.) update 24x7 — collect always.
     _scheduler.add_job(
         job_collect_live_data,
-        CronTrigger(minute="*/1", hour="9-15", day_of_week="mon-fri", timezone=IST),
+        IntervalTrigger(seconds=60),
         id="collect_live", replace_existing=True,
         misfire_grace_time=20,
         coalesce=True,
@@ -86,14 +85,17 @@ async def start_scheduler():
 
     # ── Always-running tasks ──
     _scheduler.add_job(
-        job_watchdog_check, IntervalTrigger(seconds=30),
-        id="watchdog", replace_existing=True,
-        misfire_grace_time=15,
-    )
-    _scheduler.add_job(
         job_broadcast_live, IntervalTrigger(seconds=5),
         id="broadcast_live", replace_existing=True,
-        misfire_grace_time=10,  # don't warn if up to 10s late
+        misfire_grace_time=10,
+    )
+    # News refresh every 45s — prices come from AngelOne push, only news needs polling
+    _scheduler.add_job(
+        job_refresh_news, IntervalTrigger(seconds=45),
+        id="refresh_news", replace_existing=True,
+        misfire_grace_time=20,
+        coalesce=True,
+        max_instances=1,
     )
 
     # ── Weekly ──
@@ -125,8 +127,45 @@ async def start_scheduler():
     _scheduler.start()
     logger.info("Scheduler started with all jobs")
 
+    # Seed cache immediately on startup so frontend shows data right away
+    asyncio.create_task(_seed_cache_on_startup())
+
     # Start AngelOne SmartStream feed — all Indian market prices via WebSocket push
     asyncio.create_task(_start_angel_feed())
+
+
+async def _seed_cache_on_startup():
+    """Run one collection immediately on startup so the cache is populated before the
+    first scheduled job fires. Falls back to the last DB snapshot if the live fetch fails."""
+    global _latest_market_data
+    try:
+        from bot.collector import collect_all_signals
+        data = await collect_all_signals()
+        data = _sanitize_for_json(data)
+        if data.get("fresh_signals_count", 0) > 0:
+            _latest_market_data = data
+            logger.info(f"Startup cache seeded: {data['fresh_signals_count']} signals")
+            return
+    except Exception as exc:
+        logger.warning(f"Startup collection failed: {exc}")
+
+    # Fallback: load last known snapshot from DB
+    try:
+        from db.connection import AsyncSessionLocal
+        from db.models import DailyMarketSnapshot
+        from sqlalchemy import select
+        async with AsyncSessionLocal() as session:
+            result = await session.execute(
+                select(DailyMarketSnapshot)
+                .order_by(DailyMarketSnapshot.created_at.desc())
+                .limit(1)
+            )
+            snap = result.scalar_one_or_none()
+            if snap and snap.all_data:
+                _latest_market_data = dict(snap.all_data)
+                logger.info("Startup cache seeded from last DB snapshot")
+    except Exception as exc:
+        logger.warning(f"Startup DB seed failed: {exc}")
 
 
 async def _start_angel_feed():
@@ -138,12 +177,14 @@ async def _start_angel_feed():
         global _latest_market_data
         if not field:
             return
+        from bot.angel_feed import get_all_live_prices
         merged = dict(_latest_market_data) if _latest_market_data else {}
-        merged[field] = price
+        # Merge full live prices (includes OHLC: *_today_open, *_prev_close, *_vwap etc.)
+        merged.update(get_all_live_prices())
         merged["nse_market_active"] = True
         _latest_market_data = merged
         # Immediate broadcast on every tick for <1s latency
-        from websocket.live_feed import manager
+        from ws.live_feed import manager
         await manager.broadcast_market_update(merged)
 
     started = await start_feed(on_tick=_on_tick)
@@ -235,7 +276,7 @@ async def job_collect_live_data():
         # Update in-memory cache and broadcast to WebSocket clients
         global _latest_market_data
         _latest_market_data = data
-        from websocket.live_feed import manager
+        from ws.live_feed import manager
         await manager.broadcast_market_update(data)
 
     except Exception as exc:
@@ -306,6 +347,94 @@ async def job_daily_postmortem():
         await run_daily_postmortem()
     except Exception as exc:
         logger.error(f"job_daily_postmortem error: {exc}", exc_info=True)
+    # Classify and save today's market regime
+    try:
+        await _save_market_regime()
+    except Exception as exc:
+        logger.error(f"Market regime save error: {exc}", exc_info=True)
+
+
+async def _save_market_regime():
+    """Classify today's market regime and store in DB + Claude memory."""
+    from datetime import date
+    from db.connection import AsyncSessionLocal
+    from db.models import DailyMarketSnapshot, MarketRegime
+    from sqlalchemy import select
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+    async with AsyncSessionLocal() as session:
+        # Get last 5 EOD snapshots for trend calculation
+        result = await session.execute(
+            select(DailyMarketSnapshot)
+            .where(DailyMarketSnapshot.time_of_day == "close")
+            .where(DailyMarketSnapshot.nifty_close.isnot(None))
+            .order_by(DailyMarketSnapshot.date.desc())
+            .limit(5)
+        )
+        snaps = result.scalars().all()
+
+    if not snaps:
+        return
+
+    today_snap = snaps[0]
+    vix = today_snap.india_vix or 15.0
+    pcr = today_snap.put_call_ratio or 1.0
+    fii_net = today_snap.fii_net or 0.0
+
+    # 5-day averages
+    vix_avg = sum(s.india_vix or vix for s in snaps) / len(snaps)
+    fii_5d = sum(s.fii_net or 0 for s in snaps) / len(snaps)
+    pcr_avg = sum(s.put_call_ratio or pcr for s in snaps) / len(snaps)
+
+    nifty_trend = 0.0
+    if len(snaps) >= 2 and snaps[-1].nifty_close:
+        nifty_trend = (snaps[0].nifty_close - snaps[-1].nifty_close) / snaps[-1].nifty_close * 100
+
+    # Simple regime classification
+    if vix_avg > 22:
+        regime = "HIGH_VOLATILITY"
+    elif vix_avg < 13:
+        regime = "LOW_VOLATILITY"
+    elif nifty_trend > 1.5 and fii_5d > 0:
+        regime = "BULL"
+    elif nifty_trend < -1.5 and fii_5d < 0:
+        regime = "BEAR"
+    else:
+        regime = "SIDEWAYS"
+
+    async with AsyncSessionLocal() as session:
+        stmt = pg_insert(MarketRegime).values(
+            date=date.today(),
+            regime=regime,
+            vix_avg_5d=round(vix_avg, 2),
+            nifty_trend_5d=round(nifty_trend, 2),
+            fii_net_5d=round(fii_5d, 2),
+            put_call_ratio_avg=round(pcr_avg, 2),
+        )
+        stmt = stmt.on_conflict_do_update(
+            constraint="uq_market_regime_date",
+            set_={
+                "regime": stmt.excluded["regime"],
+                "vix_avg_5d": stmt.excluded["vix_avg_5d"],
+                "nifty_trend_5d": stmt.excluded["nifty_trend_5d"],
+                "fii_net_5d": stmt.excluded["fii_net_5d"],
+                "put_call_ratio_avg": stmt.excluded["put_call_ratio_avg"],
+            },
+        )
+        await session.execute(stmt)
+        await session.commit()
+
+    # Persist regime to Claude memory
+    from bot.analyzer import save_claude_memory
+    await save_claude_memory(
+        category="market_regime",
+        key=f"regime_{date.today()}",
+        value={"regime": regime, "vix_avg_5d": vix_avg, "nifty_trend_5d": nifty_trend,
+               "fii_net_5d": fii_5d, "pcr_avg": pcr_avg, "date": str(date.today())},
+        source="eod_classifier",
+        confidence=0.85,
+    )
+    logger.info(f"Market regime saved: {regime} (VIX={vix_avg:.1f}, trend={nifty_trend:.1f}%)")
 
 
 async def job_update_historical():
@@ -316,19 +445,34 @@ async def job_update_historical():
         logger.error(f"job_update_historical error: {exc}", exc_info=True)
 
 
-async def job_watchdog_check():
+async def job_refresh_news():
+    """Fetch fresh news every 45s and merge into the live cache.
+    Prices come from AngelOne WebSocket push — only news needs periodic polling.
+    """
+    global _latest_market_data
     try:
-        from healing.watchdog import run_watchdog_check
-        await run_watchdog_check()
+        from bot.collector import fetch_market_news, fetch_alphavantage_news
+        news, av = await asyncio.gather(
+            fetch_market_news(), fetch_alphavantage_news(), return_exceptions=True
+        )
+        merged = dict(_latest_market_data) if _latest_market_data else {}
+        if isinstance(news, dict) and news.get("news"):
+            main_articles = news["news"]
+            av_articles = av.get("av_news", []) if isinstance(av, dict) else []
+            all_articles = main_articles + av_articles
+            merged["news"] = all_articles
+            merged["news_count"] = len(all_articles)
+            _latest_market_data = merged
+            logger.debug(f"News refreshed: {len(all_articles)} articles")
     except Exception as exc:
-        logger.debug(f"Watchdog check error: {exc}")
+        logger.debug(f"job_refresh_news error: {exc}")
 
 
 async def job_broadcast_live():
     """Broadcast latest cached data to WebSocket clients every 2 seconds."""
     global _latest_market_data
     try:
-        from websocket.live_feed import manager
+        from ws.live_feed import manager
 
         # Use in-memory cache (updated by fast_tick and collect_live)
         if _latest_market_data:

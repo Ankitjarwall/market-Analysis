@@ -51,6 +51,87 @@ async def _call_claude_json(prompt: str, max_tokens: int = 2000) -> dict:
         raise
 
 
+async def _load_claude_memories(categories: list[str] | None = None) -> str:
+    """Load active Claude memories from DB and return as formatted text for prompts."""
+    try:
+        from db.connection import AsyncSessionLocal
+        from db.models import ClaudeMemory
+        from sqlalchemy import select
+        from datetime import datetime, timezone
+
+        async with AsyncSessionLocal() as session:
+            query = select(ClaudeMemory).where(
+                ClaudeMemory.is_active == True,
+                (ClaudeMemory.expires_at == None) | (ClaudeMemory.expires_at > datetime.now(timezone.utc)),
+            )
+            if categories:
+                query = query.where(ClaudeMemory.category.in_(categories))
+            query = query.order_by(ClaudeMemory.category, ClaudeMemory.updated_at.desc()).limit(50)
+            result = await session.execute(query)
+            memories = result.scalars().all()
+
+        if not memories:
+            return "No persistent memories yet."
+
+        lines = []
+        current_cat = None
+        for m in memories:
+            if m.category != current_cat:
+                current_cat = m.category
+                lines.append(f"\n[{current_cat.upper()}]")
+            val = m.value if isinstance(m.value, str) else json.dumps(m.value)
+            conf = f" (confidence: {int(m.confidence * 100)}%)" if m.confidence else ""
+            lines.append(f"  • {m.key}: {val}{conf}")
+        return "\n".join(lines)
+    except Exception as exc:
+        logger.debug(f"Could not load Claude memories: {exc}")
+        return "Memory system unavailable."
+
+
+async def save_claude_memory(category: str, key: str, value: Any, source: str = "system",
+                              confidence: float = 0.8) -> None:
+    """Upsert a memory entry in the DB. Called by learning_engine after loss analysis."""
+    try:
+        from db.connection import AsyncSessionLocal
+        from db.models import ClaudeMemory
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
+        from datetime import datetime, timezone
+
+        import json as _json
+        from sqlalchemy import cast
+        from sqlalchemy.dialects.postgresql import JSONB
+
+        json_val = value if isinstance(value, (dict, list)) else {"text": str(value)}
+
+        async with AsyncSessionLocal() as session:
+            stmt = pg_insert(ClaudeMemory).values(
+                category=category,
+                key=key,
+                value=cast(_json.dumps(json_val), JSONB),
+                source=source,
+                confidence=confidence,
+                validation_count=1,
+                is_active=True,
+                updated_at=datetime.now(timezone.utc),
+            )
+            stmt = stmt.on_conflict_do_update(
+                constraint="uq_claude_memory_category_key",
+                set_={
+                    "value": cast(_json.dumps(json_val), JSONB),
+                    "source": source,
+                    "confidence": confidence,
+                    "validation_count": ClaudeMemory.validation_count + 1,
+                    "updated_at": datetime.now(timezone.utc),
+                    "is_active": True,
+                },
+            )
+            await session.execute(stmt)
+            await session.commit()
+        logger.info(f"Claude memory saved: [{category}] {key}")
+    except Exception as exc:
+        logger.error(f"Failed to save Claude memory: {exc}")
+
+
 # ══════════════════════════════════════════════════════════
 #  MORNING BRIEF
 # ══════════════════════════════════════════════════════════
@@ -108,6 +189,9 @@ Drawdown/ATH:   {drawdown_from_ath:.1f}%
 ══ ACTIVE SIGNAL RULES (learned from losses) ══
 {signal_rules}
 
+══ CLAUDE PERSISTENT MEMORY (lessons across sessions) ══
+{claude_memories}
+
 OUTPUT THIS EXACT JSON:
 {{
   "direction": "UP|DOWN|FLAT",
@@ -156,6 +240,9 @@ Options Chain data:
 
 Active signal rules:
 {signal_rules}
+
+Persistent learnings:
+{claude_memories}
 
 Gates that MUST pass:
 - Min VIX for PUT: {min_vix_put}
@@ -222,6 +309,9 @@ Live Bank Nifty Options Chain (ATM ± 5 strikes):
 
 Active Signal Rules (learned from losses):
 {signal_rules}
+
+Persistent learnings:
+{claude_memories}
 
 Gates status:
 - VWAP check:        {vwap_gate}
@@ -326,6 +416,8 @@ async def generate_morning_brief():
         )
         rules = rules_result.scalars().all()
 
+    memories = await _load_claude_memories()
+
     now = datetime.now(tz=timezone.utc)
     market_open = now.replace(hour=3, minute=45, second=0)  # 9:15 AM IST = 3:45 AM UTC
     minutes_to_open = max(0, int((market_open - now).total_seconds() / 60))
@@ -376,6 +468,7 @@ async def generate_morning_brief():
         pattern_match_summary="No historical pattern match available",
         recent_predictions=recent_preds_text or "No recent predictions",
         signal_rules=rules_text or "Default rules active",
+        claude_memories=memories,
     )
 
     try:
@@ -406,7 +499,7 @@ async def generate_morning_brief():
         await send_message(result.get("telegram_message", "Morning brief generated"))
 
         # Broadcast to WebSocket
-        from websocket.live_feed import manager
+        from ws.live_feed import manager
         await manager.broadcast_bot_activity(f"Morning brief: {result['direction']} {result.get('magnitude_low', '')}–{result.get('magnitude_high', '')}%")
 
         logger.info(f"Morning brief sent: {result['direction']} confidence={result.get('confidence')}")
@@ -448,6 +541,7 @@ async def generate_midday_brief():
         if morning_pred
         else "No morning prediction available"
     )
+    memories = await _load_claude_memories()
 
     prompt = MORNING_PROMPT.format(
         date=date.today().strftime("%A, %d %B %Y"),
@@ -488,6 +582,7 @@ async def generate_midday_brief():
         pattern_match_summary=morning_context,
         recent_predictions=morning_context,
         signal_rules=rules_text or "Default rules active",
+        claude_memories=memories,
     )
 
     try:
@@ -523,7 +618,7 @@ async def generate_midday_brief():
         from bot.telegram_sender import send_message
         await send_message(result.get("telegram_message", "Midday brief generated"))
 
-        from websocket.live_feed import manager
+        from ws.live_feed import manager
         await manager.broadcast_bot_activity(
             f"Midday brief: {result['direction']} confidence={result.get('confidence')}%"
         )
@@ -571,6 +666,7 @@ async def generate_closing_brief():
         rules = rules_result.scalars().all()
 
     rules_text = "\n".join(f"- {r.rule_name}: {r.rule_value}" for r in rules)
+    memories = await _load_claude_memories()
     preds_context = "\n".join(
         f"{p.time_of_day}: {p.direction} (confidence {p.confidence}%)"
         for p in predictions
@@ -622,6 +718,7 @@ async def generate_closing_brief():
         pattern_match_summary=preds_context,
         recent_predictions=preds_context,
         signal_rules=rules_text or "Default rules active",
+        claude_memories=memories,
     )
 
     try:
@@ -656,7 +753,7 @@ async def generate_closing_brief():
         from bot.telegram_sender import send_message
         await send_message(result.get("telegram_message", "Closing brief generated"))
 
-        from websocket.live_feed import manager
+        from ws.live_feed import manager
         await manager.broadcast_bot_activity(
             f"Closing brief: {result['direction']} confidence={result.get('confidence')}%"
         )

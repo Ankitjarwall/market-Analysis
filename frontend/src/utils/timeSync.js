@@ -7,7 +7,7 @@ export function getNow() {
 }
 
 export async function syncIST() {
-  const API = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+  const API = import.meta.env.VITE_API_URL || ''
   try {
     const before = Date.now()
     const res = await fetch(`${API}/api/system/time`)

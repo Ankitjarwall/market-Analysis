@@ -69,30 +69,32 @@ async def get_historical(
     symbol: str,
     days: int = Query(default=365, ge=1, le=365 * 30),
     current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ):
-    """Fetch historical OHLCV data for a symbol via yfinance."""
-    try:
-        import yfinance as yf
-        from datetime import datetime, timedelta
-        end = datetime.now()
-        start = end - timedelta(days=days)
-        ticker = yf.Ticker(symbol)
-        hist = ticker.history(start=start, end=end, interval="1d")
-        if hist.empty:
-            raise HTTPException(status_code=404, detail=f"No data for symbol {symbol}")
-        records = []
-        for dt, row in hist.iterrows():
-            records.append({
-                "date": dt.strftime("%Y-%m-%d"),
-                "open": round(float(row["Open"]), 2),
-                "high": round(float(row["High"]), 2),
-                "low": round(float(row["Low"]), 2),
-                "close": round(float(row["Close"]), 2),
-                "volume": int(row["Volume"]),
-            })
-        return {"symbol": symbol, "days": days, "data": records}
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    """Return historical snapshots from the platform DB (collected via AngelOne)."""
+    from sqlalchemy import text
+    result = await db.execute(
+        select(
+            DailyMarketSnapshot.date,
+            DailyMarketSnapshot.nifty_close,
+            DailyMarketSnapshot.banknifty_close,
+            DailyMarketSnapshot.time_of_day,
+        )
+        .where(DailyMarketSnapshot.time_of_day == "close")
+        .order_by(DailyMarketSnapshot.date.desc())
+        .limit(days)
+    )
+    rows = result.all()
+    if not rows:
+        raise HTTPException(status_code=404, detail="No historical data in DB yet")
+    return {
+        "symbol": symbol,
+        "days": days,
+        "data": [
+            {"date": str(r.date), "nifty": r.nifty_close, "banknifty": r.banknifty_close}
+            for r in rows
+        ],
+    }
 
 
 @router.get("/nifty-pe")
@@ -147,8 +149,8 @@ async def get_market_status(current_user: User = Depends(get_current_user)):
     """Return whether NSE is currently open.
     Combines two signals:
       1. Time-based: is it 9:15–15:30 IST on a weekday?
-      2. Data freshness: did yfinance return a candle < 20 min old?
-    Using both handles market holidays (yfinance returns stale data on holidays).
+      2. Data freshness: did AngelOne deliver a tick recently (nse_market_active)?
+    Using both handles market holidays — AngelOne stops sending ticks on holidays.
     """
     from datetime import datetime
     from zoneinfo import ZoneInfo

@@ -8,6 +8,7 @@ import { syncIST, getNow } from './utils/timeSync'
 import Login from './pages/Login'
 import Dashboard from './pages/Dashboard'
 import Options from './pages/Options'
+import News from './pages/News'
 import SelfHeal from './pages/SelfHeal'
 import Admin from './pages/Admin'
 import SystemMonitor from './pages/SystemMonitor'
@@ -27,6 +28,7 @@ function ProtectedRoute({ children, requiredRole }) {
 
 const NAV_ITEMS = [
   { path: '/dashboard', label: '📊 Dashboard', minRole: 'viewer' },
+  { path: '/news',      label: '📰 News',       minRole: 'viewer' },
   { path: '/options',   label: '⚡ Options',   minRole: 'analyst' },
   { path: '/self-heal', label: '🔧 Heal',       minRole: 'admin' },
   { path: '/admin',     label: '👥 Admin',      minRole: 'admin' },
@@ -93,6 +95,7 @@ function Layout({ children }) {
   const { user, logout } = useAuth()
   const navigate = useNavigate()
   const { connected } = useWebSocket()
+  const wsError = useMarketStore(s => s.wsError)
   const systemLogs = useMarketStore(s => s.systemLogs)
   const [sidebarOpen, setSidebarOpen] = useState(false)
 
@@ -197,6 +200,18 @@ function Layout({ children }) {
 
       {/* Main content area */}
       <div className="flex-1 flex flex-col overflow-hidden">
+        {/* Session expired / WS error banner */}
+        {wsError && wsError.includes('expired') && (
+          <div className="bg-yellow-900/80 border-b border-yellow-700 px-4 py-2 flex items-center justify-between text-sm shrink-0">
+            <span className="text-yellow-300">Session expired — please sign in again</span>
+            <button
+              onClick={() => { logout(); navigate('/login') }}
+              className="text-xs bg-yellow-700 hover:bg-yellow-600 text-white px-3 py-1 rounded transition-colors"
+            >
+              Sign In
+            </button>
+          </div>
+        )}
         {/* Mobile top bar */}
         <div className="md:hidden flex items-center justify-between px-4 py-3 bg-[#1a1d26] border-b border-[#2a2d3a] shrink-0">
           <button
@@ -242,6 +257,9 @@ export default function App() {
 
         <Route path="/dashboard" element={
           <ProtectedRoute><Layout><Dashboard /></Layout></ProtectedRoute>
+        } />
+        <Route path="/news" element={
+          <ProtectedRoute><Layout><News /></Layout></ProtectedRoute>
         } />
         <Route path="/options" element={
           <ProtectedRoute requiredRole="analyst"><Layout><Options /></Layout></ProtectedRoute>

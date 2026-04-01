@@ -36,7 +36,7 @@ def add_log_entry(entry: dict) -> None:
 
 async def _broadcast_log(entry: dict) -> None:
     try:
-        from websocket.live_feed import manager
+        from ws.live_feed import manager
         await manager.broadcast({"type": "LOG_ENTRY", "entry": entry})
     except Exception:
         pass

@@ -4,7 +4,7 @@ import { useMarketStore } from '../store/marketStore'
 import MarketTooltip from './MarketTooltip'
 import { getNow } from '../utils/timeSync'
 
-const API = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+const API = import.meta.env.VITE_API_URL || ''
 
 // NSE instruments — open status comes from backend
 const NSE_KEYS = new Set(['nifty', 'banknifty', 'india_vix'])
@@ -106,6 +106,12 @@ export default function MarketTicker() {
             const valueColor = dir > 0 ? 'text-green-400' : dir < 0 ? 'text-red-400' : formatted ? 'text-white' : 'text-gray-600'
             const arrow = dir > 0 ? ' ▲' : dir < 0 ? ' ▼' : ''
 
+            const chgPct = data?.[`${key}_chg_pct`]
+            // Use real-time direction if available, else fall back to day-change direction
+            const effectiveDir = dir !== 0 ? dir : (chgPct != null ? (chgPct > 0 ? 1 : chgPct < 0 ? -1 : 0) : 0)
+            const effectiveColor = effectiveDir > 0 ? 'text-green-400' : effectiveDir < 0 ? 'text-red-400' : formatted ? 'text-white' : 'text-gray-600'
+            const effectiveArrow = effectiveDir > 0 ? ' ▲' : effectiveDir < 0 ? ' ▼' : ''
+
             return (
               <MarketTooltip key={key} marketKey={key} currentPrice={val}>
                 <div className="flex items-center gap-1.5 text-sm px-3 py-2 border-r border-[#2a2d3a] last:border-r-0 cursor-default hover:bg-[#1e2230] transition-colors">
@@ -118,9 +124,14 @@ export default function MarketTicker() {
                     <span className="h-2 w-2 rounded-full bg-gray-600 shrink-0" />
                   )}
                   <span className="text-gray-500 text-xs font-medium">{label}</span>
-                  <span className={`font-mono font-bold text-sm transition-colors duration-300 ${valueColor}`}>
-                    {formatted ? <>{formatted}<span className="text-xs">{arrow}</span></> : '—'}
+                  <span className={`font-mono font-bold text-sm transition-colors duration-300 ${effectiveColor}`}>
+                    {formatted ? <>{formatted}<span className="text-xs">{effectiveArrow}</span></> : '—'}
                   </span>
+                  {chgPct != null && (
+                    <span className={`text-[10px] font-mono opacity-70 ${effectiveDir > 0 ? 'text-green-400' : effectiveDir < 0 ? 'text-red-400' : 'text-gray-500'}`}>
+                      {chgPct > 0 ? '+' : ''}{chgPct.toFixed(2)}%
+                    </span>
+                  )}
                 </div>
               </MarketTooltip>
             )

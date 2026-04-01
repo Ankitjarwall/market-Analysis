@@ -1,7 +1,7 @@
 """
 System monitoring endpoints.
 GET  /api/system/logs          — recent log buffer
-GET  /api/system/status        — DB / Redis / scheduler health
+GET  /api/system/status        — DB / Redis / scheduler / AngelOne health
 GET  /api/system/test-feeds    — live-test all external data sources
 """
 
@@ -26,7 +26,7 @@ async def get_logs(
     level: str | None = Query(default=None),
     _: User = Depends(get_current_user),
 ):
-    logs = get_recent_logs(limit * 2)  # fetch extra then filter
+    logs = get_recent_logs(limit * 2)
     if source:
         logs = [l for l in logs if l.get("source") == source]
     if level:
@@ -36,7 +36,7 @@ async def get_logs(
 
 @router.get("/status")
 async def get_system_status(_: User = Depends(get_current_user)):
-    """Check Postgres, Redis, scheduler, and WebSocket connection counts."""
+    """Check Postgres, Redis, scheduler, AngelOne feed and WebSocket connection counts."""
     status: dict = {}
 
     # ── PostgreSQL ────────────────────────────────────────────────────────────
@@ -72,9 +72,24 @@ async def get_system_status(_: User = Depends(get_current_user)):
     except Exception as e:
         status["scheduler"] = {"ok": False, "error": str(e)}
 
+    # ── AngelOne feed ─────────────────────────────────────────────────────────
+    try:
+        from bot.angel_feed import is_active, get_all_live_prices
+        prices = get_all_live_prices()
+        status["angel_feed"] = {
+            "ok": is_active(),
+            "connected": is_active(),
+            "nifty": prices.get("nifty"),
+            "banknifty": prices.get("banknifty"),
+            "india_vix": prices.get("india_vix"),
+            "price_fields": len(prices),
+        }
+    except Exception as e:
+        status["angel_feed"] = {"ok": False, "error": str(e)}
+
     # ── WebSocket connections ─────────────────────────────────────────────────
     try:
-        from websocket.live_feed import _connections
+        from ws.live_feed import _connections
         total = sum(len(v) for v in _connections.values())
         status["websocket"] = {"ok": True, "connections": total, "users": len(_connections)}
     except Exception as e:
@@ -87,6 +102,7 @@ async def get_system_status(_: User = Depends(get_current_user)):
             "ok": bool(_latest_market_data),
             "keys": len(_latest_market_data),
             "has_nifty": "nifty" in _latest_market_data,
+            "has_news": "news" in _latest_market_data,
         }
     except Exception as e:
         status["data_cache"] = {"ok": False, "error": str(e)}
@@ -100,134 +116,86 @@ async def test_data_feeds(_: User = Depends(RequireAdmin)):
     """Live-test every external data source and return latency + sample data."""
     results: dict = {}
 
-    # ── yfinance ──────────────────────────────────────────────────────────────
+    # ── AngelOne SmartStream (replaces yfinance) ──────────────────────────────
     try:
-        import yfinance as yf
+        from bot.angel_feed import is_active, get_all_live_prices
         t0 = time.perf_counter()
-        raw = await asyncio.get_event_loop().run_in_executor(
-            None,
-            lambda: yf.download(
-                "^NSEI ^GSPC GC=F INR=X ^INDIAVIX",
-                period="1d", interval="1m",
-                group_by="ticker", auto_adjust=True, progress=False,
-            ),
+        connected = is_active()
+        prices = get_all_live_prices()
+        elapsed = round((time.perf_counter() - t0) * 1000, 0)
+        results["angel_feed"] = {
+            "ok": connected,
+            "latency_ms": elapsed,
+            "connected": connected,
+            "prices": {
+                k: v for k, v in prices.items()
+                if not any(k.endswith(s) for s in ("_open", "_high", "_low", "_prev_close", "_vwap"))
+            },
+            "note": "Live via WebSocket push — no polling" if connected else "Market closed or credentials not set",
+        }
+    except Exception as e:
+        results["angel_feed"] = {"ok": False, "error": str(e)}
+
+    # ── NewsAPI ───────────────────────────────────────────────────────────────
+    try:
+        from bot.collector import fetch_market_news
+        t0 = time.perf_counter()
+        news = await fetch_market_news()
+        elapsed = round((time.perf_counter() - t0) * 1000, 0)
+        results["newsapi"] = {
+            "ok": news.get("news_count", 0) > 0,
+            "latency_ms": elapsed,
+            "articles": news.get("news_count", 0),
+            "sample_title": news.get("news", [{}])[0].get("title", "")[:80] if news.get("news") else None,
+        }
+    except Exception as e:
+        results["newsapi"] = {"ok": False, "error": str(e)}
+
+    # ── AlphaVantage News ─────────────────────────────────────────────────────
+    try:
+        from bot.collector import fetch_alphavantage_news
+        t0 = time.perf_counter()
+        av = await fetch_alphavantage_news()
+        elapsed = round((time.perf_counter() - t0) * 1000, 0)
+        results["alphavantage"] = {
+            "ok": av.get("av_news_count", 0) > 0,
+            "latency_ms": elapsed,
+            "articles": av.get("av_news_count", 0),
+        }
+    except Exception as e:
+        results["alphavantage"] = {"ok": False, "error": str(e)}
+
+    # ── Claude AI ─────────────────────────────────────────────────────────────
+    try:
+        from config import settings
+        import anthropic
+        t0 = time.perf_counter()
+        client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
+        msg = await client.messages.create(
+            model=settings.claude_model,
+            max_tokens=10,
+            messages=[{"role": "user", "content": "Reply: OK"}],
         )
         elapsed = round((time.perf_counter() - t0) * 1000, 0)
-        prices = {}
-        sym_map = {"^NSEI": "nifty", "^GSPC": "sp500", "GC=F": "gold", "INR=X": "usd_inr", "^INDIAVIX": "india_vix"}
-        if not raw.empty and hasattr(raw.columns, "get_level_values") and len(raw.columns.names) > 1:
-            level0 = raw.columns.get_level_values(0)
-            for sym, name in sym_map.items():
-                try:
-                    if sym in level0:
-                        s = raw[sym]["Close"]
-                        val = float(s.dropna().iloc[-1])
-                        if val == val:
-                            prices[name] = round(val, 2)
-                except Exception:
-                    pass
-        results["yfinance"] = {
-            "ok": bool(prices),
+        results["claude_ai"] = {
+            "ok": True,
             "latency_ms": elapsed,
-            "shape": f"{raw.shape[0]}r × {raw.shape[1]}c",
-            "prices": prices,
+            "model": settings.claude_model,
+            "response": msg.content[0].text if msg.content else "",
         }
     except Exception as e:
-        results["yfinance"] = {"ok": False, "error": str(e)}
+        results["claude_ai"] = {"ok": False, "error": str(e)}
 
-    # ── NSE FII/DII ───────────────────────────────────────────────────────────
-    try:
-        import httpx
-        t0 = time.perf_counter()
-        async with httpx.AsyncClient(timeout=10) as client:
-            await client.get("https://www.nseindia.com/",
-                             headers={"User-Agent": "Mozilla/5.0", "Accept": "text/html"})
-            resp = await client.get(
-                "https://www.nseindia.com/api/fiidiiTradeReact",
-                headers={"User-Agent": "Mozilla/5.0", "Referer": "https://www.nseindia.com/"},
-            )
-        elapsed = round((time.perf_counter() - t0) * 1000, 0)
-        data = resp.json() if resp.status_code == 200 else None
-        results["nse_fii"] = {
-            "ok": resp.status_code == 200,
-            "latency_ms": elapsed,
-            "http_status": resp.status_code,
-            "rows": len(data) if isinstance(data, list) else 0,
-            "sample": data[0] if isinstance(data, list) and data else None,
-        }
-    except Exception as e:
-        results["nse_fii"] = {"ok": False, "error": str(e)}
-
-    # ── NSE Options Chain (PCR) ────────────────────────────────────────────────
-    try:
-        import httpx
-        t0 = time.perf_counter()
-        async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
-            await client.get("https://www.nseindia.com/",
-                             headers={"User-Agent": "Mozilla/5.0", "Accept": "text/html"})
-            resp = await client.get(
-                "https://www.nseindia.com/api/option-chain-indices?symbol=NIFTY",
-                headers={
-                    "User-Agent": "Mozilla/5.0",
-                    "Accept": "application/json",
-                    "Referer": "https://www.nseindia.com/",
-                },
-            )
-        elapsed = round((time.perf_counter() - t0) * 1000, 0)
-        pcr = None
-        if resp.status_code == 200:
-            d = resp.json()
-            filtered = d.get("filtered", {})
-            pe_oi = filtered.get("PE", {}).get("totOI", 0) if isinstance(filtered.get("PE"), dict) else 0
-            ce_oi = filtered.get("CE", {}).get("totOI", 0) if isinstance(filtered.get("CE"), dict) else 0
-            if pe_oi and ce_oi:
-                pcr = round(pe_oi / ce_oi, 3)
-        results["nse_pcr"] = {
-            "ok": resp.status_code == 200,
-            "latency_ms": elapsed,
-            "http_status": resp.status_code,
-            "pcr": pcr,
-        }
-    except Exception as e:
-        results["nse_pcr"] = {"ok": False, "error": str(e)}
-
-    # ── Nifty Indices (PE/PB) ─────────────────────────────────────────────────
-    try:
-        import httpx
-        t0 = time.perf_counter()
-        async with httpx.AsyncClient(timeout=12) as client:
-            resp = await client.post(
-                "https://www.niftyindices.com/Backpage.aspx/getHistoricaldatatabletoday",
-                json={"name": "NIFTY 50", "startDate": "", "endDate": ""},
-                headers={"User-Agent": "Mozilla/5.0", "Content-Type": "application/json",
-                         "Referer": "https://www.niftyindices.com/"},
-            )
-        elapsed = round((time.perf_counter() - t0) * 1000, 0)
-        pe = None
-        if resp.status_code == 200:
-            rows = resp.json().get("d", [])
-            if rows:
-                pe = rows[0].get("PE")
-        results["nifty_pe"] = {
-            "ok": resp.status_code == 200,
-            "latency_ms": elapsed,
-            "http_status": resp.status_code,
-            "pe": pe,
-        }
-    except Exception as e:
-        results["nifty_pe"] = {"ok": False, "error": str(e)}
-
-    # ── Cache snapshot ────────────────────────────────────────────────────────
+    # ── Live cache snapshot ────────────────────────────────────────────────────
     try:
         from bot.scheduler import _latest_market_data
         results["live_cache"] = {
             "ok": bool(_latest_market_data),
             "keys": len(_latest_market_data),
             "nifty": _latest_market_data.get("nifty"),
-            "sp500": _latest_market_data.get("sp500"),
-            "gold": _latest_market_data.get("gold"),
-            "usd_inr": _latest_market_data.get("usd_inr"),
+            "banknifty": _latest_market_data.get("banknifty"),
             "india_vix": _latest_market_data.get("india_vix"),
+            "news_count": _latest_market_data.get("news_count", 0),
         }
     except Exception as e:
         results["live_cache"] = {"ok": False, "error": str(e)}

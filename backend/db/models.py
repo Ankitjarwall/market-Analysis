@@ -514,3 +514,66 @@ class PredictionMistake(Base):
     prediction: Mapped[Prediction | None] = relationship(
         "Prediction", back_populates="mistakes"
     )
+
+
+# ══════════════════════════════════════════════════════════
+#  CLAUDE AI MEMORY — persistent context for AI predictions
+# ══════════════════════════════════════════════════════════
+
+
+class ClaudeMemory(Base):
+    """
+    Stores key facts, patterns and rules that Claude needs across sessions.
+    Each entry is a named memory slot — Claude reads these before each analysis
+    so it has full context without relying on conversation history.
+    """
+    __tablename__ = "claude_memory"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    # Category: "market_pattern" | "trade_rule" | "prediction_bias" | "seasonal" | "regime"
+    category: Mapped[str] = mapped_column(String(30), nullable=False, index=True)
+    key: Mapped[str] = mapped_column(String(100), nullable=False, unique=True)
+    value: Mapped[str] = mapped_column(Text, nullable=False)
+    # Source that created this memory
+    source: Mapped[str] = mapped_column(
+        String(20),
+        CheckConstraint("source IN ('learning_engine','manual','weekly_review','monthly_calibration')"),
+        default="learning_engine",
+    )
+    confidence: Mapped[int] = mapped_column(
+        Integer, CheckConstraint("confidence BETWEEN 0 AND 100"), default=70
+    )
+    # How many times this pattern has been validated
+    validation_count: Mapped[int] = mapped_column(Integer, default=1)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    expires_at: Mapped[date | None] = mapped_column(Date, nullable=True)  # None = permanent
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class MarketRegime(Base):
+    """
+    Tracks current market regime so Claude knows the macro context.
+    Updated daily by the learning engine after EOD analysis.
+    """
+    __tablename__ = "market_regime"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    date: Mapped[date] = mapped_column(Date, nullable=False, unique=True)
+    regime: Mapped[str] = mapped_column(
+        String(20),
+        CheckConstraint("regime IN ('BULL','BEAR','SIDEWAYS','HIGH_VOLATILITY','LOW_VOLATILITY')"),
+        nullable=False,
+    )
+    vix_avg_5d: Mapped[float | None] = mapped_column(Float)
+    nifty_trend_5d: Mapped[float | None] = mapped_column(Float)   # % change over 5 days
+    fii_net_5d: Mapped[float | None] = mapped_column(Float)        # sum of FII net over 5 days
+    put_call_ratio_avg: Mapped[float | None] = mapped_column(Float)
+    notes: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )

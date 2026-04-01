@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, useCallback } from 'react'
 import axios from 'axios'
 import { useMarketStore } from '../store/marketStore'
 
-const API = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+const API = import.meta.env.VITE_API_URL || ''
 
 const TABS = [
   { id: 'all',       label: 'All Logs' },

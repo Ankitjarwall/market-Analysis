@@ -7,7 +7,8 @@ COPY package.json package-lock.json ./
 RUN npm install
 
 COPY . .
-RUN npm run build
+# Empty VITE_API_URL → frontend uses relative URLs → nginx proxies /api/ /auth/ /ws/ to backend
+RUN VITE_API_URL="" npm run build
 
 # ── Stage 2: Serve with nginx ────────────────────────────
 FROM nginx:1.27-alpine AS runner

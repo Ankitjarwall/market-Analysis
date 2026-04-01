@@ -88,7 +88,8 @@ async def manual_entry(
         raise HTTPException(status_code=400, detail="Risk per unit is zero — invalid entry price")
 
     rr = reward_t1 / risk_per_unit
-    lot_size = 25  # Nifty
+    from bot.position_calculator import get_lot_size
+    lot_size = get_lot_size(signal.underlying or "NIFTY50")
     premium_total = entry_premium * lots * lot_size
     max_loss = risk_per_unit * lots * lot_size
     max_loss_pct = (max_loss / current_user.capital) * 100

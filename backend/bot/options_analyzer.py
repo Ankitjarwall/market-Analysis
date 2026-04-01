@@ -305,7 +305,7 @@ async def check_and_generate_signal(underlying: str = "NIFTY50"):
     from db.connection import AsyncSessionLocal
     from db.models import Signal, SignalRule, User
     from sqlalchemy import select
-    from websocket.live_feed import manager
+    from ws.live_feed import manager
 
     now = datetime.now(tz=IST)
 
@@ -329,13 +329,14 @@ async def check_and_generate_signal(underlying: str = "NIFTY50"):
     # Collect live data
     data = await collect_all_signals()
 
-    # Compute VWAP for the relevant underlying
+    # VWAP comes directly from AngelOne feed cache — no symbol arg needed
     if is_bn:
-        vwap = await calculate_vwap(symbol="^NSEBANK")
-        if vwap:
-            data["banknifty_vwap"] = vwap
+        from bot.angel_feed import get_live_price
+        bn_vwap = get_live_price("banknifty_vwap")
+        if bn_vwap:
+            data["banknifty_vwap"] = bn_vwap
     else:
-        vwap = await calculate_vwap(symbol="^NSEI")
+        vwap = await calculate_vwap()
         if vwap:
             data["vwap"] = vwap
 
@@ -346,12 +347,11 @@ async def check_and_generate_signal(underlying: str = "NIFTY50"):
         return
 
     # Intraday technicals and options chain for the correct underlying
-    yf_symbol = "^NSEBANK" if is_bn else "^NSEI"
-    nse_symbol = "BANKNIFTY" if is_bn else "NIFTY"
+    angel_symbol = "BANKNIFTY" if is_bn else "NIFTY"
     spot_price = data.get("banknifty", 0) if is_bn else data.get("nifty", 0)
 
-    technicals = await get_intraday_technicals(symbol=yf_symbol)
-    chain = await get_options_chain_summary(symbol=nse_symbol, spot_price=spot_price)
+    technicals = await get_intraday_technicals(symbol=angel_symbol)
+    chain = await get_options_chain_summary(symbol=angel_symbol, spot_price=spot_price)
 
     # Gate checks — Bank Nifty uses its own wider-band gates
     if is_bn:
@@ -386,13 +386,44 @@ async def check_and_generate_signal(underlying: str = "NIFTY50"):
         rules = rules_result.scalars().all()
         rules_text = "\n".join(f"- {r.rule_name}: {r.rule_value}" for r in rules)
 
+    from bot.analyzer import _load_claude_memories
+    claude_memories = await _load_claude_memories(categories=["loss_patterns", "market_regime", "prediction_performance"])
+
     fii_net = data.get("fii_net") or 0
     fii_direction = "SELL" if fii_net < 0 else "BUY"
+
+    # Compute actual FII consecutive days from recent DB snapshots
+    async with AsyncSessionLocal() as session:
+        from db.models import DailyMarketSnapshot
+        from sqlalchemy import select as sa_select
+        snap_result = await session.execute(
+            sa_select(DailyMarketSnapshot.fii_net, DailyMarketSnapshot.date)
+            .where(DailyMarketSnapshot.time_of_day == "close")
+            .where(DailyMarketSnapshot.fii_net.isnot(None))
+            .order_by(DailyMarketSnapshot.date.desc())
+            .limit(10)
+        )
+        rows = snap_result.all()
+    fii_consecutive = 0
+    if rows:
+        target_sign = -1 if fii_net < 0 else 1
+        for row in rows:
+            if (row.fii_net < 0 and target_sign == -1) or (row.fii_net >= 0 and target_sign == 1):
+                fii_consecutive += 1
+            else:
+                break
+    fii_consecutive = max(1, fii_consecutive)  # at least 1 (today)
+
+    # Guard: block if VWAP is None (market just opened, VWAP not yet computed)
+    spot_vwap = data.get("banknifty_vwap") if is_bn else data.get("vwap")
+    if spot_vwap is None:
+        logger.debug(f"[{underlying}] Signal blocked: VWAP not yet available from AngelOne feed")
+        return
 
     # Build prompt for the correct underlying
     if is_bn:
         bn_price = spot_price
-        bn_vwap = data.get("banknifty_vwap", bn_price)
+        bn_vwap = spot_vwap
         bn_vs_vwap = ((bn_price - bn_vwap) / bn_vwap * 100) if bn_vwap else 0
         prompt = BANKNIFTY_SIGNAL_PROMPT.format(
             time=now.strftime("%H:%M IST"),
@@ -403,8 +434,8 @@ async def check_and_generate_signal(underlying: str = "NIFTY50"):
             pcr=data.get("put_call_ratio") or "N/A",
             fii_net=fii_net,
             fii_direction=fii_direction,
-            fii_consecutive=1,
-            vix_trend="RISING",
+            fii_consecutive=fii_consecutive,
+            vix_trend="RISING" if (data.get("india_vix") or 0) > 18 else "STABLE",
             nifty_price=data.get("nifty", "N/A"),
             us_10y=data.get("us_10y") or "N/A",
             crude=data.get("crude_brent") or "N/A",
@@ -415,6 +446,7 @@ async def check_and_generate_signal(underlying: str = "NIFTY50"):
             volume_ratio=technicals.get("volume_ratio") or 1.0,
             options_chain_relevant_strikes=str(chain.get("chain_around_atm", []))[:2000],
             signal_rules=rules_text or "Default rules active",
+            claude_memories=claude_memories,
             vwap_gate="PASS" if (put_gates if signal_direction == "PUT" else call_gates).all_passed else "FAIL",
             vix_gate="PASS",
             fii_gate="PASS",
@@ -426,7 +458,7 @@ async def check_and_generate_signal(underlying: str = "NIFTY50"):
         )
     else:
         nifty_price = spot_price
-        vwap_val = data.get("vwap", nifty_price)
+        vwap_val = spot_vwap
         nifty_vs_vwap = ((nifty_price - vwap_val) / vwap_val * 100) if vwap_val else 0
         prompt = OPTIONS_SIGNAL_PROMPT.format(
             time=now.strftime("%H:%M IST"),
@@ -437,14 +469,15 @@ async def check_and_generate_signal(underlying: str = "NIFTY50"):
             pcr=data.get("put_call_ratio") or "N/A",
             fii_net=fii_net,
             fii_direction=fii_direction,
-            fii_consecutive=1,
-            vix_trend="RISING",
+            fii_consecutive=fii_consecutive,
+            vix_trend="RISING" if (data.get("india_vix") or 0) > 18 else "STABLE",
             rsi_5m=technicals.get("rsi_14") or "N/A",
             ema9=technicals.get("ema9") or "N/A",
             ema21=technicals.get("ema21") or "N/A",
             volume_ratio=technicals.get("volume_ratio") or 1.0,
             options_chain_relevant_strikes=str(chain.get("chain_around_atm", []))[:2000],
             signal_rules=rules_text or "Default rules active",
+            claude_memories=claude_memories,
             min_vix_put=settings.min_vix_for_put,
             min_fii_days=settings.min_fii_consecutive_days,
             time_check="PASS" if timing.all_passed else "FAIL",
@@ -465,8 +498,10 @@ async def check_and_generate_signal(underlying: str = "NIFTY50"):
 
     # Validate R:R before saving
     from bot.position_calculator import calculate_position as calc_pos
+    # Claude returns "approximate_ltp" — normalise to "ltp" for position_calculator
+    entry_ltp = result.get("approximate_ltp") or result.get("ltp", 0)
     signal_data = {
-        "ltp": result.get("approximate_ltp", 0),
+        "ltp": entry_ltp,
         "stop_loss": result.get("stop_loss", 0),
         "target1": result.get("target1", 0),
         "target2": result.get("target2", 0),

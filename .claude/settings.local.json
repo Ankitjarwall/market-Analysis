@@ -23,7 +23,8 @@
       "Bash(curl -s -o /dev/null -w \"Frontend HTTP status: %{http_code}\\\\n\" http://localhost:5173/)",
       "Bash(curl -s http://localhost:5173/)",
       "Bash(npx --yes skills add anthropics/claude-code --skill frontend-design --agent \"Claude Code\")",
-      "Bash(curl -s http://localhost:5173)"
+      "Bash(curl -s http://localhost:5173)",
+      "Bash(curl -s -X POST http://localhost:8000/auth/login -H 'Content-Type: application/json' -d '{\"email\":\"admin@marketplatform.io\",\"password\":\"Admin@123!\"}')"
     ]
   }
 }

@@ -33,14 +33,6 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         logger.warning(f"Scheduler failed to start: {exc}")
 
-    # Start self-healing watchdog
-    try:
-        from healing.watchdog import start_watchdog
-        await start_watchdog()
-        logger.info("Watchdog started")
-    except Exception as exc:
-        logger.warning(f"Watchdog failed to start: {exc}")
-
     yield
 
     # Shutdown
@@ -111,9 +103,9 @@ from api.signals import router as signals_router
 from api.trades import router as trades_router
 from api.predictions import router as predictions_router
 from api.admin import router as admin_router
-from api.self_heal import router as heal_router
 from api.system import router as system_router
-from websocket.live_feed import router as ws_router
+from api.self_heal import router as self_heal_router
+from ws.live_feed import router as ws_router
 
 app.include_router(auth_router)
 app.include_router(market_router)
@@ -121,8 +113,8 @@ app.include_router(signals_router)
 app.include_router(trades_router)
 app.include_router(predictions_router)
 app.include_router(admin_router)
-app.include_router(heal_router)
 app.include_router(system_router)
+app.include_router(self_heal_router)
 app.include_router(ws_router)
 
 

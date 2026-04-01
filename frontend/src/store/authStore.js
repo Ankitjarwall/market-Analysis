@@ -2,7 +2,7 @@ import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import axios from 'axios'
 
-const API = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+const API = import.meta.env.VITE_API_URL || ''
 
 export const useAuthStore = create(
   persist(
@@ -78,7 +78,9 @@ export function setupAxiosAuth() {
   axios.interceptors.response.use(
     (r) => r,
     (err) => {
-      if (err.response?.status === 401) {
+      const status = err.response?.status
+      // 401 = token invalid/expired, 403 on /auth/* = token rejected
+      if (status === 401 || (status === 403 && err.config?.url?.includes('/auth/'))) {
         useAuthStore.getState().logout()
       }
       return Promise.reject(err)

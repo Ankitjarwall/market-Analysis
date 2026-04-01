@@ -162,7 +162,7 @@ async def start_feed(on_tick: Optional[Callable] = None) -> bool:
     """
     Authenticate with AngelOne and start the SmartStream WebSocket in a daemon thread.
     on_tick(field, price, raw_message) is called on the main asyncio event loop per tick.
-    Returns True if started, False if credentials missing.
+    Returns True if started, False if credentials missing or already running.
     """
     global _feed_active, _ws_thread, _main_loop, _on_tick_callback
 
@@ -170,9 +170,14 @@ async def start_feed(on_tick: Optional[Callable] = None) -> bool:
     if not api_key:
         logger.warning(
             "AngelOne SmartStream not started — ANGELONE_API_KEY not set. "
-            "Falling back to yfinance polling for Indian market prices."
+            "Set ANGELONE_API_KEY in .env to enable live Indian market prices."
         )
         return False
+
+    # Guard against double-start (e.g. uvicorn hot-reload fires lifespan twice)
+    if _feed_active and _ws_thread and _ws_thread.is_alive():
+        logger.info("AngelOne feed already running — skipping duplicate start")
+        return True
 
     _main_loop = asyncio.get_event_loop()
     _on_tick_callback = on_tick
@@ -276,18 +281,19 @@ def _connect_and_run():
             _needs_resubscribe = False
             _do_subscribe(sws)
 
-    def on_error(wsapp, error):
-        logger.error(f"AngelOne WS error: {error}")
+    def on_error(*args):
+        logger.error(f"AngelOne WS error: {args}")
 
-    def on_close(wsapp, code, reason):
+    def on_close(wsapp):
         global _is_connected
         _is_connected = False
-        logger.info(f"AngelOne WS closed: {code} {reason}")
+        logger.info("AngelOne WS closed")
 
-    sws.On_open = on_open
-    sws.On_message = on_data
-    sws.On_error = on_error
-    sws.On_close = on_close
+    # v1.5.5 uses lowercase instance-attribute overrides, not On_open / On_message
+    sws.on_open = on_open
+    sws.on_data = on_data   # on_data receives parsed tick dicts
+    sws.on_error = on_error
+    sws.on_close = on_close
     sws.connect()  # blocks until SmartWebSocketV2 exhausts retries
 
 

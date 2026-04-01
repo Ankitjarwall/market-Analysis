@@ -20,7 +20,7 @@ async def handle_new_signal(signal: dict, users: list):
     from bot.telegram_sender import send_signal_message, send_auto_trade_opened
     from db.connection import AsyncSessionLocal
     from db.models import Trade, User
-    from websocket.live_feed import manager
+    from ws.live_feed import manager
 
     for user in users:
         if not getattr(user, "is_active", True):
@@ -208,7 +208,7 @@ async def _get_current_premium(
 
 async def _check_and_update_trade(session, trade, signal, current_premium: float):
     from bot.telegram_sender import send_message
-    from websocket.live_feed import manager
+    from ws.live_feed import manager
 
     lot_size = 25
 

@@ -126,6 +126,25 @@ async def process_losing_trade(trade_id: int):
 
     logger.info(f"Learning recorded for trade {trade_id}: {analysis.get('miss_category')}")
 
+    # Save key lesson to Claude persistent memory so future prompts benefit
+    if analysis.get("miss_category") and analysis.get("miss_category") != "CORRECT_SETUP_BAD_LUCK":
+        try:
+            from bot.analyzer import save_claude_memory
+            await save_claude_memory(
+                category="loss_patterns",
+                key=f"{analysis['miss_category']}_{date.today()}",
+                value={
+                    "miss_category": analysis.get("miss_category"),
+                    "root_cause": analysis.get("root_cause"),
+                    "signal_adjustment": analysis.get("signal_adjustment"),
+                    "expected_improvement": analysis.get("expected_improvement"),
+                },
+                source="loss_analysis",
+                confidence=min(1.0, analysis.get("confidence_in_analysis", 75) / 100),
+            )
+        except Exception as exc:
+            logger.debug(f"Memory save after loss analysis failed: {exc}")
+
 
 async def run_weekly_prediction_review():
     """Weekly review of prediction accuracy — update signal rules based on patterns."""
@@ -151,8 +170,22 @@ async def run_weekly_prediction_review():
 
     logger.info(f"Weekly prediction accuracy: {accuracy:.1f}% ({correct}/{total})")
 
+    # Save accuracy metric to Claude memory
+    try:
+        from bot.analyzer import save_claude_memory
+        await save_claude_memory(
+            category="prediction_performance",
+            key=f"weekly_accuracy_{date.today()}",
+            value={"accuracy_pct": round(accuracy, 1), "correct": correct, "total": total,
+                   "week_ending": str(date.today())},
+            source="weekly_review",
+            confidence=1.0,
+        )
+    except Exception:
+        pass
+
     # Broadcast weekly review activity
-    from websocket.live_feed import manager
+    from ws.live_feed import manager
     await manager.broadcast_bot_activity(
         f"Weekly review: {accuracy:.1f}% prediction accuracy ({correct}/{total} correct)"
     )
