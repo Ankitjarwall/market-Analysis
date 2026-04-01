@@ -6,7 +6,9 @@ const API = import.meta.env.VITE_API_URL || ''
 export default function SignalCard({ signal, tradeMode, capital }) {
   if (!signal) return null
 
-  const ltp = signal.ltp_at_signal || 0
+  const entryLtp = signal.ltp_at_signal || 0
+  const liveLtp = signal.current_premium   // set by WS patch; undefined when no option feed
+  const ltp = liveLtp ?? entryLtp          // use live if available, else entry
   const t1 = signal.target1 || 0
   const t2 = signal.target2 || 0
   const sl = signal.stop_loss || 0
@@ -17,6 +19,12 @@ export default function SignalCard({ signal, tradeMode, capital }) {
   const rrOk = signal.rr_ratio >= 2
   const isBankNifty = signal.underlying === 'BANKNIFTY'
   const lotSize = isBankNifty ? 15 : 25
+  const signalAge = signal.timestamp
+    ? (() => {
+        const mins = Math.floor((Date.now() - new Date(signal.timestamp)) / 60000)
+        return mins < 60 ? `${mins}m ago` : `${Math.floor(mins/60)}h ${mins%60}m ago`
+      })()
+    : null
 
   return (
     <div className={`card border-l-4 ${isCall ? 'border-l-green-500' : 'border-l-red-500'}`}>
@@ -35,11 +43,26 @@ export default function SignalCard({ signal, tradeMode, capital }) {
         <span className="badge badge-blue">{signal.confidence}% confident</span>
       </div>
 
+      {signalAge && (
+        <div className="text-[10px] text-gray-600 mb-2">Signal generated {signalAge}</div>
+      )}
       <div className="grid grid-cols-3 gap-4 mb-4 text-center">
         <div className="bg-[#0f1117] rounded-lg p-3">
           <div className="text-xs text-gray-500 mb-1">STRIKE</div>
           <div className="font-bold text-white">{signal.strike} {signal.option_type}</div>
-          <div className="text-xs text-gray-400">LTP ₹{ltp} · {lotSize}/lot</div>
+          {liveLtp != null ? (
+            <div className="text-xs mt-0.5">
+              <span className={`font-mono font-semibold ${liveLtp > entryLtp ? 'text-green-400' : liveLtp < entryLtp ? 'text-red-400' : 'text-gray-300'}`}>₹{liveLtp} live</span>
+              <span className="text-gray-600 ml-1">entry ₹{entryLtp}</span>
+            </div>
+          ) : (
+            <div className="text-xs text-gray-400">Entry LTP ₹{entryLtp} · {lotSize}/lot</div>
+          )}
+          {signal.expiry && (
+            <div className="text-[10px] text-yellow-500/80 mt-0.5 font-mono">
+              Exp {new Date(signal.expiry).toLocaleDateString('en-IN', { day:'2-digit', month:'short', year:'numeric' })}
+            </div>
+          )}
         </div>
         <div className="bg-green-900/20 rounded-lg p-3 border border-green-800/40">
           <div className="text-xs text-gray-500 mb-1">T1 / T2</div>
@@ -84,9 +107,6 @@ export default function SignalCard({ signal, tradeMode, capital }) {
         <ManualEntryForm signalId={signal.id} ltp={ltp} />
       )}
 
-      <p className="text-xs text-gray-600 mt-3 text-center">
-        ⚠️ Technical analysis only. Not SEBI-registered advice.
-      </p>
     </div>
   )
 }

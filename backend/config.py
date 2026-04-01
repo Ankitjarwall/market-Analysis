@@ -45,7 +45,7 @@ class Settings(BaseSettings):
     max_daily_signals: int = 2
     signal_cooldown_after_sl: int = 60  # minutes
     min_vix_for_put: float = 15.0
-    min_fii_consecutive_days: int = 2
+    min_fii_consecutive_days: int = 1
 
     class Config:
         env_file = ".env"

@@ -16,7 +16,7 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 DEFAULT_SIGNAL_RULES = [
     {"rule_name": "min_vix_for_put", "rule_value": {"value": 15.0}, "change_reason": "Initial default"},
-    {"rule_name": "min_fii_consecutive_days", "rule_value": {"value": 2}, "change_reason": "Initial default"},
+    {"rule_name": "min_fii_consecutive_days", "rule_value": {"value": 1}, "change_reason": "Relaxed: 1 day FII direction sufficient"},
     {"rule_name": "min_confidence", "rule_value": {"value": 55}, "change_reason": "Initial default"},
     {"rule_name": "min_rr_ratio", "rule_value": {"value": 2.0}, "change_reason": "Initial default"},
     {"rule_name": "max_daily_signals", "rule_value": {"value": 2}, "change_reason": "Initial default"},

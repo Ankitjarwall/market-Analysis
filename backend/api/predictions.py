@@ -56,15 +56,18 @@ async def get_accuracy(
     db: AsyncSession = Depends(get_db),
 ):
     since = date.today() - timedelta(days=days)
-    result = await db.execute(
-        select(Prediction)
-        .where(Prediction.date >= since)
-        .where(Prediction.was_correct.isnot(None))
+
+    # All predictions in period
+    all_result = await db.execute(
+        select(Prediction).where(Prediction.date >= since)
     )
-    predictions = result.scalars().all()
+    all_predictions = all_result.scalars().all()
+
+    predictions = [p for p in all_predictions if p.was_correct is not None]
+    pending = sum(1 for p in all_predictions if p.was_correct is None)
 
     if not predictions:
-        return {"accuracy": None, "total": 0, "correct": 0, "incorrect": 0}
+        return {"accuracy": None, "total": 0, "correct": 0, "incorrect": 0, "pending": pending}
 
     correct = sum(1 for p in predictions if p.was_correct)
     total = len(predictions)
@@ -84,9 +87,20 @@ async def get_accuracy(
         "total": total,
         "correct": correct,
         "incorrect": total - correct,
+        "pending": pending,
         "accuracy_pct": round((correct / total) * 100, 1),
         "by_direction": direction_stats,
     }
+
+
+@router.post("/evaluate-pending")
+async def evaluate_pending_predictions(
+    current_user: User = Depends(get_current_user),
+):
+    """Manually trigger postmortem evaluation of all pending predictions."""
+    from bot.analyzer import run_daily_postmortem
+    await run_daily_postmortem()
+    return {"status": "ok", "message": "Postmortem evaluation triggered"}
 
 
 @router.get("/learning-log")

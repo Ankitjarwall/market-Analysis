@@ -763,40 +763,61 @@ async def generate_closing_brief():
 
 
 async def run_daily_postmortem():
-    """After market close — evaluate today's predictions."""
+    """After market close — evaluate ALL pending predictions (any date)."""
     from db.connection import AsyncSessionLocal
     from db.models import DailyMarketSnapshot, Prediction, PredictionMistake
     from sqlalchemy import select
 
-    today = date.today()
     async with AsyncSessionLocal() as session:
+        # Evaluate ALL unevaluated predictions, not just today's
         pred_result = await session.execute(
-            select(Prediction).where(Prediction.date == today)
+            select(Prediction).where(Prediction.was_correct.is_(None))
         )
         predictions = pred_result.scalars().all()
 
-        snap_result = await session.execute(
-            select(DailyMarketSnapshot)
-            .where(DailyMarketSnapshot.date == today)
-            .where(DailyMarketSnapshot.time_of_day == "close")
-        )
-        close_snapshot = snap_result.scalar_one_or_none()
-
-        if not close_snapshot or not predictions:
+        if not predictions:
+            logger.info("Daily postmortem: no pending predictions to evaluate")
             return
 
+        evaluated = 0
         for pred in predictions:
+            pred_date = pred.date
+
+            # Get close snapshot for that prediction's date
+            snap_result = await session.execute(
+                select(DailyMarketSnapshot)
+                .where(DailyMarketSnapshot.date == pred_date)
+                .where(DailyMarketSnapshot.time_of_day == "close")
+            )
+            close_snapshot = snap_result.scalar_one_or_none()
+
+            # Fallback: use "mid" snapshot if close has null nifty_close
+            close_price = close_snapshot.nifty_close if close_snapshot else None
+            if not close_price:
+                mid_snap = await session.execute(
+                    select(DailyMarketSnapshot)
+                    .where(DailyMarketSnapshot.date == pred_date)
+                    .where(DailyMarketSnapshot.time_of_day == "mid")
+                )
+                mid_snapshot = mid_snap.scalar_one_or_none()
+                close_price = mid_snapshot.nifty_close if mid_snapshot else None
+
+            if not close_price:
+                logger.debug(f"Postmortem: no close/mid price for {pred_date} — skipping")
+                continue
+
             open_snap = await session.execute(
                 select(DailyMarketSnapshot)
-                .where(DailyMarketSnapshot.date == today)
+                .where(DailyMarketSnapshot.date == pred_date)
                 .where(DailyMarketSnapshot.time_of_day == "open")
             )
             open_data = open_snap.scalar_one_or_none()
-            if not open_data or not open_data.nifty_close or not close_snapshot.nifty_close:
+            if not open_data or not open_data.nifty_close:
+                logger.debug(f"Postmortem: no open snapshot for {pred_date} — skipping")
                 continue
 
             actual_change = (
-                (close_snapshot.nifty_close - open_data.nifty_close) / open_data.nifty_close * 100
+                (close_price - open_data.nifty_close) / open_data.nifty_close * 100
             )
             actual_dir = "UP" if actual_change > 0.2 else "DOWN" if actual_change < -0.2 else "FLAT"
             was_correct = pred.direction == actual_dir
@@ -804,22 +825,24 @@ async def run_daily_postmortem():
             pred.actual_direction = actual_dir
             pred.actual_magnitude = round(actual_change, 2)
             pred.was_correct = was_correct
+            evaluated += 1
 
             if not was_correct:
+                ref_conditions = (close_snapshot.all_data if close_snapshot else {}) or {}
                 mistake = PredictionMistake(
                     prediction_id=pred.id,
-                    date=today,
+                    date=pred_date,
                     prediction_direction=pred.direction,
                     actual_direction=actual_dir,
                     error_size=abs(actual_change - (pred.magnitude_low or 0)),
-                    market_conditions=close_snapshot.all_data or {},
+                    market_conditions=ref_conditions,
                     miss_category="DIRECTION_WRONG",
                     confidence_given=pred.confidence,
                 )
                 session.add(mistake)
 
         await session.commit()
-    logger.info("Daily postmortem complete")
+    logger.info(f"Daily postmortem complete — evaluated {evaluated} prediction(s)")
 
 
 async def analyze_loss(trade_data: dict, signal_data: dict, conditions_at_entry: dict, conditions_at_exit: dict) -> dict:

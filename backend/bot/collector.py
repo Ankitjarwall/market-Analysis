@@ -246,9 +246,18 @@ async def fetch_nse_extended_data() -> dict[str, Any]:
             logger.debug(f"NSE PE/PB/ADR fetch failed: {exc}")
 
         # PCR from Nifty options chain (only available on trading days)
+        # NSE option-chain requires a more established session — warm it up first
+        try:
+            await client.get(
+                "https://www.nseindia.com/market-data/live-market-data-changes",
+                timeout=8,
+            )
+        except Exception:
+            pass
         try:
             resp = await client.get(
-                "https://www.nseindia.com/api/option-chain-indices?symbol=NIFTY"
+                "https://www.nseindia.com/api/option-chain-indices?symbol=NIFTY",
+                timeout=12,
             )
             if resp.status_code == 200:
                 data = resp.json()
@@ -257,8 +266,15 @@ async def fetch_nse_extended_data() -> dict[str, Any]:
                 pe_oi = filtered.get("PE", {}).get("totOI", 0)
                 if ce_oi and ce_oi > 0:
                     result["put_call_ratio"] = round(pe_oi / ce_oi, 3)
+            else:
+                logger.warning(f"NSE option chain HTTP {resp.status_code} — PCR unavailable")
+                # Carry forward last cached PCR if available
+                if _nse_ext_cache.get("put_call_ratio"):
+                    result["put_call_ratio"] = _nse_ext_cache["put_call_ratio"]
         except Exception as exc:
-            logger.debug(f"NSE PCR fetch failed: {exc}")
+            logger.warning(f"NSE PCR fetch failed: {exc}")
+            if _nse_ext_cache.get("put_call_ratio"):
+                result["put_call_ratio"] = _nse_ext_cache["put_call_ratio"]
 
     if result:
         _nse_ext_cache = result
@@ -506,6 +522,23 @@ async def collect_all_signals() -> dict[str, Any]:
     angel_prices = get_all_live_prices()
     result.update(angel_prices)
 
+    # VWAP fallback: AngelOne does not emit average_traded_price for NSE index tokens.
+    # Compute intraday typical-price approximation (H+L+C)/3 from OHLC when needed.
+    if not result.get("vwap"):
+        h = result.get("nifty_today_high")
+        l = result.get("nifty_today_low")
+        c = result.get("nifty")
+        if h and l and c:
+            result["vwap"] = round((h + l + c) / 3, 2)
+            logger.info(f"VWAP (OHLC fallback): ₹{result['vwap']} (H:{h} L:{l} C:{c})")
+
+    if not result.get("banknifty_vwap"):
+        h = result.get("banknifty_today_high")
+        l = result.get("banknifty_today_low")
+        c = result.get("banknifty")
+        if h and l and c:
+            result["banknifty_vwap"] = round((h + l + c) / 3, 2)
+
     # Merge news
     if isinstance(news, dict):
         result.update(news)
@@ -530,9 +563,23 @@ async def collect_all_signals() -> dict[str, Any]:
 
 
 async def calculate_vwap(symbol: str = "^NSEI", period_minutes: int = 390) -> float | None:
-    """Return intraday VWAP for Nifty from AngelOne feed."""
+    """Return VWAP from AngelOne if available, else compute (H+L+C)/3 from live OHLC."""
     from bot.angel_feed import get_live_price
-    return get_live_price("vwap")
+    vwap = get_live_price("vwap")
+    if vwap:
+        return vwap
+    h = get_live_price("nifty_today_high")
+    l = get_live_price("nifty_today_low")
+    c = get_live_price("nifty")
+    if h and l and c:
+        return round((h + l + c) / 3, 2)
+    # Final fallback: use _global_price_cache OHLC from Yahoo
+    h = _global_price_cache.get("nifty_today_high")
+    l = _global_price_cache.get("nifty_today_low")
+    c = _global_price_cache.get("nifty")
+    if h and l and c:
+        return round((h + l + c) / 3, 2)
+    return None
 
 
 def _parse_float(value: Any) -> float | None:

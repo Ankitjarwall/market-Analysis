@@ -35,6 +35,8 @@ logzero>=1.7.0
 httpx==0.27.0
 aiohttp==3.9.5
 feedparser==6.0.11
+yfinance>=0.2.40
+pandas>=2.0.0
 
 # ── Config & Env ──
 python-dotenv==1.0.1

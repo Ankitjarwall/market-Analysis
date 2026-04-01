@@ -273,6 +273,27 @@ async def job_collect_live_data():
             await session.execute(stmt)
             await session.commit()
 
+        # Attach live option premiums for any active signals
+        try:
+            from bot.angel_feed import get_option_ltp, _option_prices
+            from db.connection import AsyncSessionLocal as _ASL
+            from db.models import Signal as _Signal
+            from sqlalchemy import select as _select
+            from datetime import datetime as _dt, timezone as _tz
+            async with _ASL() as _s:
+                _res = await _s.execute(
+                    _select(_Signal)
+                    .where(_Signal.status == "OPEN")
+                    .where(_Signal.valid_until >= _dt.now(_tz.utc))
+                )
+                _sigs = _res.scalars().all()
+            if _sigs:
+                data["active_signal_premiums"] = {
+                    str(s.id): get_option_ltp(str(s.id)) for s in _sigs
+                }
+        except Exception:
+            pass
+
         # Update in-memory cache and broadcast to WebSocket clients
         global _latest_market_data
         _latest_market_data = data

@@ -119,9 +119,20 @@ export function useWebSocket() {
 
 function handleEvent(msg, store) {
   switch (msg.type) {
-    case 'PRICE_UPDATE':
-      store.setMarketData(msg.data || {})
+    case 'PRICE_UPDATE': {
+      const d = msg.data || {}
+      store.setMarketData(d)
+      // Patch live option premiums into active signals if available
+      if (d.active_signal_premiums) {
+        const sigs = store.activeSignals || []
+        const patched = sigs.map(s => {
+          const live = d.active_signal_premiums[String(s.id)]
+          return live != null ? { ...s, current_premium: live } : s
+        })
+        store.setActiveSignals(patched)
+      }
       break
+    }
     case 'SIGNAL_GENERATED': {
       const current = store.activeSignals || []
       store.setActiveSignals([msg.signal, ...current].slice(0, 10))
