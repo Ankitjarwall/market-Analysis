@@ -122,9 +122,11 @@ function handleEvent(msg, store) {
     case 'PRICE_UPDATE': {
       const d = msg.data || {}
       store.setMarketData(d)
-      // Patch live option premiums into active signals if available
+      // Patch live option premiums into active signals if available.
+      // Use getState() to read current signals — avoids stale closure overwriting
+      // signals that were fetched after the WS onmessage handler was registered.
       if (d.active_signal_premiums) {
-        const sigs = store.activeSignals || []
+        const sigs = useMarketStore.getState().activeSignals || []
         const patched = sigs.map(s => {
           const live = d.active_signal_premiums[String(s.id)]
           return live != null ? { ...s, current_premium: live } : s
@@ -134,7 +136,7 @@ function handleEvent(msg, store) {
       break
     }
     case 'SIGNAL_GENERATED': {
-      const current = store.activeSignals || []
+      const current = useMarketStore.getState().activeSignals || []
       store.setActiveSignals([msg.signal, ...current].slice(0, 10))
       store.addActivity(`🎯 Signal: ${msg.signal?.signal_type} ${msg.signal?.strike} ${msg.signal?.option_type}`, 'SIGNAL')
       break
@@ -157,6 +159,9 @@ function handleEvent(msg, store) {
     case 'HEAL_WARNING':
       store.addHealWarning(msg.warning || {})
       store.addActivity(`⚠️ Heal: ${msg.warning?.message}`, 'WARN')
+      break
+    case 'AUTO_STATUS_UPDATE':
+      store.setAutoStatus(msg.payload || null)
       break
     case 'PNL_UPDATE':
       store.updateTradePnl(msg.payload?.trade_id, msg.payload?.unrealised_pnl, msg.payload?.current_premium)

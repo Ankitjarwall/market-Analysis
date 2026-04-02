@@ -1,0 +1,12 @@
+backend/.pytest_cache
+backend/__pycache__
+backend/**/__pycache__
+backend/**/*.pyc
+backend/**/*.pyo
+frontend/node_modules
+frontend/.vite
+frontend/dist
+.git
+.env
+logs/
+data/

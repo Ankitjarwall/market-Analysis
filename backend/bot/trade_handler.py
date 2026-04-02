@@ -1,14 +1,102 @@
 """
 Trade handler — auto-logs trades when a signal fires in AUTO mode.
 Monitors open trades for T1/T2/SL hits.
+
+Daily auto-trading rules (enforced per-user, resets each IST calendar day):
+  - HALT after 3 net-losing trades → reason broadcast to frontend
+  - STOP taking new trades once cumulative net_pnl >= ₹50,000 (daily target)
 """
 
 import asyncio
 import logging
 from datetime import datetime, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 logger = logging.getLogger(__name__)
+
+IST = ZoneInfo("Asia/Kolkata")
+DAILY_TARGET = 50_000   # ₹ daily profit target
+MAX_LOSSES   = 3        # max losing trades before halt
+
+
+async def _get_today_auto_stats(user_id) -> dict:
+    """Return today's auto-trade stats for a user (IST calendar day)."""
+    from sqlalchemy import func, select
+    from db.connection import AsyncSessionLocal
+    from db.models import Trade
+
+    now_ist = datetime.now(IST)
+    today_start = datetime(now_ist.year, now_ist.month, now_ist.day, 0, 0, 0, tzinfo=IST)
+
+    async with AsyncSessionLocal() as session:
+        base = (
+            select(Trade)
+            .where(Trade.user_id == user_id)
+            .where(Trade.trade_mode == "auto")
+            .where(Trade.status == "CLOSED")
+            .where(Trade.entry_time >= today_start)
+        )
+
+        pnl_q = await session.execute(
+            select(func.coalesce(func.sum(Trade.net_pnl), 0))
+            .where(Trade.user_id == user_id)
+            .where(Trade.trade_mode == "auto")
+            .where(Trade.status == "CLOSED")
+            .where(Trade.entry_time >= today_start)
+        )
+        daily_pnl = float(pnl_q.scalar() or 0)
+
+        loss_q = await session.execute(
+            select(func.count(Trade.id))
+            .where(Trade.user_id == user_id)
+            .where(Trade.trade_mode == "auto")
+            .where(Trade.status == "CLOSED")
+            .where(Trade.net_pnl < 0)
+            .where(Trade.entry_time >= today_start)
+        )
+        loss_count = int(loss_q.scalar() or 0)
+
+        open_q = await session.execute(
+            select(func.count(Trade.id))
+            .where(Trade.user_id == user_id)
+            .where(Trade.status.in_(["OPEN", "PARTIAL"]))
+        )
+        open_count = int(open_q.scalar() or 0)
+
+    return {"daily_pnl": daily_pnl, "loss_count": loss_count, "open_count": open_count}
+
+
+async def _broadcast_auto_status(user_id, waiting_reason: str | None = None):
+    """Recompute today's stats and push AUTO_STATUS_UPDATE to the user's WebSocket."""
+    from ws.live_feed import manager
+
+    stats = await _get_today_auto_stats(user_id)
+    daily_pnl  = stats["daily_pnl"]
+    loss_count = stats["loss_count"]
+    open_count = stats["open_count"]
+
+    if loss_count >= MAX_LOSSES:
+        status = "HALTED"
+        reason = f"3 losses today — auto halted for the day to protect capital"
+    elif daily_pnl >= DAILY_TARGET:
+        status = "TARGET_MET"
+        reason = f"Daily target ₹50,000 achieved! Profit today: ₹{daily_pnl:,.0f}"
+    elif open_count > 0:
+        status = "ACTIVE"
+        reason = waiting_reason or "Trade open — monitoring for T1 / T2 / SL"
+    else:
+        status = "ACTIVE"
+        reason = waiting_reason or "Scanning for entry signals — monitoring market conditions..."
+
+    await manager.send_trade_event(str(user_id), "AUTO_STATUS_UPDATE", {
+        "status": status,
+        "daily_pnl": daily_pnl,
+        "daily_target": DAILY_TARGET,
+        "loss_count": loss_count,
+        "max_losses": MAX_LOSSES,
+        "waiting_reason": reason,
+    })
 
 
 async def handle_new_signal(signal: dict, users: list):
@@ -41,6 +129,24 @@ async def handle_new_signal(signal: dict, users: list):
             continue
 
         if user.trade_mode == "auto":
+            # ── Daily limit gates (checked before any slippage / order logic) ──
+            stats = await _get_today_auto_stats(user.id)
+
+            if stats["loss_count"] >= MAX_LOSSES:
+                logger.info(
+                    f"AUTO skipped for user {user.id}: {MAX_LOSSES} losses today, halted."
+                )
+                await _broadcast_auto_status(user.id)
+                continue
+
+            if stats["daily_pnl"] >= DAILY_TARGET:
+                logger.info(
+                    f"AUTO skipped for user {user.id}: daily target ₹{DAILY_TARGET:,} reached "
+                    f"(net today: ₹{stats['daily_pnl']:,.0f})."
+                )
+                await _broadcast_auto_status(user.id)
+                continue
+
             # Slippage guard: check current market price before opening the trade.
             # If the premium has moved > 3% while Claude was processing, the R:R
             # ratio may have deteriorated. Abort if it falls below the 2.0 minimum.
@@ -63,6 +169,14 @@ async def handle_new_signal(signal: dict, users: list):
                                 f"{slipped_position['rr_ratio']:.2f} (min 2.0). "
                                 f"Signal LTP ₹{signal_ltp}, market now ₹{current_ltp:.1f}"
                             )
+                            await _broadcast_auto_status(
+                                user.id,
+                                waiting_reason=(
+                                    f"Signal blocked: premium slippage {slippage_pct:.1%} degraded "
+                                    f"R:R to {slipped_position['rr_ratio']:.2f} (min 2.0) — "
+                                    f"waiting for next valid entry"
+                                ),
+                            )
                             continue
                         # R:R still ok — update to actual execution price
                         position = slipped_position
@@ -74,6 +188,10 @@ async def handle_new_signal(signal: dict, users: list):
                     except ValueError:
                         logger.warning(
                             f"AUTO trade aborted for user {user.id}: slippage {slippage_pct:.1%} made R:R invalid"
+                        )
+                        await _broadcast_auto_status(
+                            user.id,
+                            waiting_reason=f"Signal blocked: slippage {slippage_pct:.1%} made position sizing invalid — waiting for next signal",
                         )
                         continue
 
@@ -113,6 +231,9 @@ async def handle_new_signal(signal: dict, users: list):
                 f"Bot is monitoring every 30 seconds."
             )
             await manager.send_trade_event(str(user.id), "TRADE_OPENED", {"trade_id": trade.id, "message": msg})
+
+            # Broadcast updated auto status (trade now open)
+            await _broadcast_auto_status(user.id)
 
             # Start monitoring this trade
             asyncio.create_task(monitor_trade(trade.id))
@@ -249,6 +370,7 @@ async def _check_and_update_trade(session, trade, signal, current_premium: float
             "message": f"🎯🎯 TARGET 2 HIT! Full trade closed. Net P&L: ₹{trade.net_pnl:,.0f}",
             "trade_id": trade.id,
         })
+        await _broadcast_auto_status(trade.user_id)
 
     # SL hit
     elif current_premium <= signal.stop_loss:
@@ -272,6 +394,7 @@ async def _check_and_update_trade(session, trade, signal, current_premium: float
             "message": f"🛑 STOP LOSS HIT\nLoss: ₹{trade.net_pnl:,.0f} ({trade.net_pnl_pct:.1f}%)\nLearning engine running analysis...",
             "trade_id": trade.id,
         })
+        await _broadcast_auto_status(trade.user_id)
 
         # Run learning engine in background
         import asyncio
@@ -289,6 +412,7 @@ async def _check_and_update_trade(session, trade, signal, current_premium: float
         trade.net_pnl_pct = round(trade.net_pnl / trade.capital_at_entry * 100, 2)
         trade.status = "CLOSED"
         await session.commit()
+        await _broadcast_auto_status(trade.user_id)
 
     # Broadcast unrealised P&L
     unrealised = (current_premium - trade.entry_premium) * trade.lots * lot_size

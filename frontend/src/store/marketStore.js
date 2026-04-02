@@ -26,6 +26,9 @@ export const useMarketStore = create((set) => ({
   // System monitor logs (real-time from backend)
   systemLogs: [],
 
+  // Auto-trading daily status
+  autoStatus: null,   // { status, daily_pnl, daily_target, loss_count, max_losses, waiting_reason }
+
   // Connection status
   wsConnected: false,
   wsError: null,
@@ -63,6 +66,8 @@ export const useMarketStore = create((set) => ({
   })),
 
   clearSystemLogs: () => set({ systemLogs: [] }),
+
+  setAutoStatus: (s) => set({ autoStatus: s }),
 
   setWsConnected: (connected) => set({ wsConnected: connected }),
   setWsError: (err) => set({ wsError: err }),

@@ -3,6 +3,7 @@ import axios from 'axios'
 import { useMarketStore } from '../store/marketStore'
 import MarketTicker from '../components/MarketTicker'
 import HealWarning from '../components/HealWarning'
+import AutoStatusPanel from '../components/AutoStatusPanel'
 import MarketTooltip from '../components/MarketTooltip'
 import { getNow } from '../utils/timeSync'
 
@@ -160,6 +161,7 @@ export default function Dashboard() {
 
       <div className="flex-1 overflow-auto p-4 space-y-4">
         <HealWarning />
+        <AutoStatusPanel />
 
         {/* ── Hero row: Nifty + BankNifty + Prediction + FII/DII ── */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">

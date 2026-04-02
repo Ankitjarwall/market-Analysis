@@ -1,10 +1,12 @@
+# syntax=docker/dockerfile:1
 # ── Stage 1: Build ──────────────────────────────────────
 FROM node:20-alpine AS builder
 
 WORKDIR /app
 
 COPY package.json package-lock.json ./
-RUN npm install
+RUN --mount=type=cache,target=/root/.npm \
+    npm install --prefer-offline
 
 COPY . .
 # Empty VITE_API_URL → frontend uses relative URLs → nginx proxies /api/ /auth/ /ws/ to backend
@@ -13,13 +15,9 @@ RUN VITE_API_URL="" npm run build
 # ── Stage 2: Serve with nginx ────────────────────────────
 FROM nginx:1.27-alpine AS runner
 
-# Remove default nginx static assets
 RUN rm -rf /usr/share/nginx/html/*
 
-# Copy built assets from build stage
 COPY --from=builder /app/dist /usr/share/nginx/html
-
-# nginx config — SPA fallback + API proxy
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 
 EXPOSE 80

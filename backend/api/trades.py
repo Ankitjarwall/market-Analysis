@@ -4,6 +4,7 @@ Trade journal API endpoints.
 
 import uuid
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
@@ -16,6 +17,10 @@ from sqlalchemy.orm import selectinload
 
 from db.connection import get_db
 from db.models import Signal, Trade, User
+
+_IST = ZoneInfo("Asia/Kolkata")
+_DAILY_TARGET = 50_000
+_MAX_LOSSES   = 3
 
 router = APIRouter(prefix="/api/trades", tags=["trades"])
 
@@ -182,6 +187,71 @@ async def pnl_summary(
         "daily": daily,
         "weekly": weekly,
         "monthly": monthly,
+    }
+
+
+@router.get("/auto-status")
+async def get_auto_status(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return today's auto-trading status: daily P&L vs target, loss count, halted flag, waiting reason."""
+    now_ist = datetime.now(_IST)
+    today_start = datetime(now_ist.year, now_ist.month, now_ist.day, 0, 0, 0, tzinfo=_IST)
+
+    pnl_q = await db.execute(
+        select(func.coalesce(func.sum(Trade.net_pnl), 0))
+        .where(Trade.user_id == current_user.id)
+        .where(Trade.trade_mode == "auto")
+        .where(Trade.status == "CLOSED")
+        .where(Trade.entry_time >= today_start)
+    )
+    daily_pnl = float(pnl_q.scalar() or 0)
+
+    loss_q = await db.execute(
+        select(func.count(Trade.id))
+        .where(Trade.user_id == current_user.id)
+        .where(Trade.trade_mode == "auto")
+        .where(Trade.status == "CLOSED")
+        .where(Trade.net_pnl < 0)
+        .where(Trade.entry_time >= today_start)
+    )
+    loss_count = int(loss_q.scalar() or 0)
+
+    open_q = await db.execute(
+        select(func.count(Trade.id))
+        .where(Trade.user_id == current_user.id)
+        .where(Trade.status.in_(["OPEN", "PARTIAL"]))
+    )
+    open_count = int(open_q.scalar() or 0)
+
+    halted     = loss_count >= _MAX_LOSSES
+    target_met = daily_pnl >= _DAILY_TARGET
+
+    if halted:
+        status         = "HALTED"
+        waiting_reason = f"3 losses today — auto halted for the day to protect capital"
+    elif target_met:
+        status         = "TARGET_MET"
+        waiting_reason = f"Daily target ₹50,000 achieved! Profit today: ₹{daily_pnl:,.0f}"
+    elif open_count > 0:
+        status         = "ACTIVE"
+        waiting_reason = "Trade open — monitoring for T1 / T2 / SL"
+    else:
+        status         = "ACTIVE"
+        waiting_reason = "Scanning for entry signals — monitoring market conditions..."
+
+    return {
+        "trade_mode":    current_user.trade_mode,
+        "daily_pnl":     daily_pnl,
+        "daily_target":  _DAILY_TARGET,
+        "target_met":    target_met,
+        "loss_count":    loss_count,
+        "max_losses":    _MAX_LOSSES,
+        "halted":        halted,
+        "open_count":    open_count,
+        "waiting_reason": waiting_reason,
+        "status":        status,
     }
 
 

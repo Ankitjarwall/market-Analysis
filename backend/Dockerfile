@@ -1,15 +1,15 @@
+# syntax=docker/dockerfile:1
 FROM python:3.11-slim
 
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    git \
+    gcc \
     && rm -rf /var/lib/apt/lists/*
 
-# requirements.txt is copied from the project root via docker-compose build context
 COPY requirements.txt /requirements.txt
-RUN pip install --no-cache-dir -r /requirements.txt
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install -r /requirements.txt
 
 COPY backend/ .
 
