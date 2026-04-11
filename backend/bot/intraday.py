@@ -1,15 +1,19 @@
 """
 Intraday technical analysis — RSI, EMA, volume ratio.
-Primary source: AngelOne getCandleData REST API.
-Fallback: yfinance 5-minute candle data (used when AngelOne not configured).
 
-Options chain summary uses AngelOne if available, otherwise approximates
-ATM/OTM prices via Black-Scholes with India VIX as the IV proxy.
+Data sources (in priority order):
+  1. Live tick buffer   — 5-min candles built from AngelOne WebSocket ticks (real-time)
+  2. AngelOne REST API  — getCandleData (historical 5-min bars; needs credentials)
+  3. yfinance           — 5-min fallback when AngelOne not configured
+
+Options chain summary uses real NSE OI data when available, otherwise falls back
+to Black-Scholes estimated LTPs using India VIX as the IV proxy.
 """
 
 import asyncio
 import logging
 import os
+import threading
 from datetime import datetime, timedelta
 from math import erf, exp, log, sqrt
 from typing import Any
@@ -30,6 +34,90 @@ YF_SYMBOLS = {
     "BANKNIFTY": "^NSEBANK",
 }
 
+# ── Live tick candle buffer ───────────────────────────────────────────────────
+# Rolling 5-minute OHLCV bars built from AngelOne WebSocket ticks.
+# Written by the WebSocket thread via update_live_candle(); read by get_intraday_technicals().
+_CANDLE_INTERVAL_MIN = 5
+_MAX_CANDLES         = 120          # ~10 hours of 5-min bars
+_candle_lock         = threading.Lock()
+_live_candle_buffer: dict[str, list]  = {}   # symbol → list of [ts,o,h,l,c,v]
+_current_candle:     dict[str, dict]  = {}   # symbol → {ts,open,high,low,close,volume}
+_today_ohlc:         dict[str, dict]  = {}   # symbol → {open,high,low,close,vwap}
+
+
+def update_live_candle(symbol: str, ltp: float, ohlc_data: dict | None = None) -> None:
+    """
+    Update the live 5-minute candle buffer from an AngelOne tick.
+    Called on the WebSocket thread from angel_feed._process_tick().
+
+    Parameters
+    ----------
+    symbol    : "NIFTY" or "BANKNIFTY"
+    ltp       : last traded price from the tick
+    ohlc_data : optional dict with today_open / today_high / today_low / vwap
+                (from AngelOne SnapQuote fields)
+    """
+    now = datetime.now(tz=IST)
+    bucket_minute = (now.minute // _CANDLE_INTERVAL_MIN) * _CANDLE_INTERVAL_MIN
+    bucket_ts = now.replace(minute=bucket_minute, second=0, microsecond=0)
+
+    with _candle_lock:
+        if symbol not in _live_candle_buffer:
+            _live_candle_buffer[symbol] = []
+        if symbol not in _current_candle:
+            _current_candle[symbol] = None
+
+        current = _current_candle[symbol]
+
+        if current is None or current["ts"] != bucket_ts:
+            # Close the previous bucket and start a new one
+            if current is not None:
+                _live_candle_buffer[symbol].append([
+                    current["ts"],
+                    current["open"],
+                    current["high"],
+                    current["low"],
+                    current["close"],
+                    current["volume"],
+                ])
+                if len(_live_candle_buffer[symbol]) > _MAX_CANDLES:
+                    _live_candle_buffer[symbol] = _live_candle_buffer[symbol][-_MAX_CANDLES:]
+
+            _current_candle[symbol] = {
+                "ts":     bucket_ts,
+                "open":   ltp,
+                "high":   ltp,
+                "low":    ltp,
+                "close":  ltp,
+                "volume": 0,
+            }
+        else:
+            # Update running candle
+            current["high"]  = max(current["high"],  ltp)
+            current["low"]   = min(current["low"],   ltp)
+            current["close"] = ltp
+
+        # Cache today's OHLC from SnapQuote for VWAP / context
+        if ohlc_data:
+            _today_ohlc[symbol] = ohlc_data
+
+
+def _get_live_candles(symbol: str) -> list:
+    """Return completed + current-incomplete candle list for a symbol."""
+    with _candle_lock:
+        candles = list(_live_candle_buffer.get(symbol, []))
+        current = _current_candle.get(symbol)
+        if current:
+            candles.append([
+                current["ts"],
+                current["open"],
+                current["high"],
+                current["low"],
+                current["close"],
+                current["volume"],
+            ])
+        return candles
+
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
@@ -38,20 +126,40 @@ async def get_intraday_technicals(
 ) -> dict[str, Any]:
     """
     Compute intraday RSI(14), EMA(9), EMA(21), volume_ratio.
-    1. Try AngelOne getCandleData (requires credentials)
-    2. Fall back to yfinance 5-minute data
+
+    Source priority:
+      1. Live tick buffer (5-min bars built from AngelOne WebSocket ticks — real-time)
+      2. AngelOne getCandleData REST API (historical, requires credentials)
+      3. yfinance 5-minute bars (fallback)
+      4. Bare-minimum: live price from cache
     """
-    # --- AngelOne path ---
+    # 1. Live tick buffer (event-driven, always up to date)
+    live_candles = _get_live_candles(symbol)
+    if live_candles and len(live_candles) >= 22:
+        logger.debug(f"[{symbol}] Intraday technicals from live tick buffer ({len(live_candles)} bars)")
+        result = _compute_technicals(live_candles, symbol, source="live_tick")
+        # Attach today's OHLC context
+        ohlc = _today_ohlc.get(symbol, {})
+        if ohlc:
+            result.update({
+                "today_open":  ohlc.get("open"),
+                "today_high":  ohlc.get("high"),
+                "today_low":   ohlc.get("low"),
+                "vwap":        ohlc.get("vwap"),
+            })
+        return result
+
+    # 2. AngelOne REST candles
     candles = await _fetch_candles_angel(symbol, interval, days=5)
     if candles and len(candles) >= 22:
         return _compute_technicals(candles, symbol, source="angelone")
 
-    # --- yfinance fallback ---
+    # 3. yfinance fallback
     candles_yf = await _fetch_candles_yfinance(symbol, days=5)
     if candles_yf and len(candles_yf) >= 22:
         return _compute_technicals(candles_yf, symbol, source="yfinance")
 
-    # --- bare minimum: just live price ---
+    # 4. Bare minimum: just live price from cache
     from bot.angel_feed import get_live_price
     field = "nifty" if symbol == "NIFTY" else "banknifty"
     ltp = get_live_price(field)
@@ -64,17 +172,20 @@ async def get_options_chain_summary(
     symbol: str = "NIFTY", spot_price: float = 22000
 ) -> dict[str, Any]:
     """
-    Return options chain summary with ATM and near-strikes for Claude.
-    Builds estimated LTPs via Black-Scholes + India VIX when live chain unavailable.
+    Return options chain summary with per-strike OI, LTP, IV and key levels for Claude.
+
+    Source priority:
+      1. NSE OI chain (real data: OI, LTP, IV per strike + max pain / walls)
+      2. Black-Scholes estimated LTPs using India VIX (fallback)
     """
     from bot.angel_feed import get_live_price
 
+    # Resolve live spot price
     field = "nifty" if symbol == "NIFTY" else "banknifty"
     live_spot = get_live_price(field)
     if live_spot:
         spot_price = live_spot
     else:
-        # Try collector global cache first
         try:
             from bot.collector import _global_price_cache
             cached = _global_price_cache.get(field)
@@ -82,7 +193,6 @@ async def get_options_chain_summary(
                 spot_price = cached
         except Exception:
             pass
-        # Final fallback: fetch live price from yfinance right now
         if spot_price == 22000:
             try:
                 yf_sym = YF_SYMBOLS.get(symbol.upper(), "^NSEI")
@@ -97,15 +207,64 @@ async def get_options_chain_summary(
     strike_interval = 100 if symbol == "BANKNIFTY" else 50
     atm = round(spot_price / strike_interval) * strike_interval
 
-    # Build estimated chain using Black-Scholes
-    chain = _build_estimated_chain(spot_price, atm, strike_interval, symbol)
+    # ── Attempt real NSE OI chain ─────────────────────────────────────────────
+    try:
+        from bot.collector import fetch_nse_oi_chain
+        oi_data = await fetch_nse_oi_chain(symbol)
+    except Exception as exc:
+        logger.debug(f"OI chain fetch skipped: {exc}")
+        oi_data = {}
 
+    if oi_data and oi_data.get("strikes"):
+        strikes = oi_data["strikes"]
+        # Build chain_around_atm from real OI data (ATM ±5 strikes)
+        chain_rows = []
+        for offset in range(-5, 6):
+            k = atm + offset * strike_interval
+            row = strikes.get(int(k))
+            if row:
+                moneyness = "ATM" if offset == 0 else ("ITM" if offset < 0 else "OTM")
+                chain_rows.append({
+                    "strike":       k,
+                    "CE_ltp":       row["CE_ltp"],
+                    "PE_ltp":       row["PE_ltp"],
+                    "CE_oi":        row["CE_oi"],
+                    "PE_oi":        row["PE_oi"],
+                    "CE_change_oi": row["CE_change_oi"],
+                    "PE_change_oi": row["PE_change_oi"],
+                    "CE_iv":        row["CE_iv"],
+                    "PE_iv":        row["PE_iv"],
+                    "moneyness":    moneyness,
+                    "source":       "nse_live",
+                })
+
+        logger.info(
+            f"[{symbol}] OI chain summary: ATM={atm} MaxPain={oi_data.get('max_pain')} "
+            f"CallWall={oi_data.get('call_wall')} PutWall={oi_data.get('put_wall')}"
+        )
+        return {
+            "atm_strike":       float(atm),
+            "spot_price":       spot_price,
+            "max_pain":         oi_data.get("max_pain", atm),
+            "call_wall":        oi_data.get("call_wall"),
+            "put_wall":         oi_data.get("put_wall"),
+            "pcr":              oi_data.get("pcr"),
+            "top_oi_strikes":   oi_data.get("top_oi_strikes", []),
+            "total_ce_oi":      oi_data.get("total_ce_oi"),
+            "total_pe_oi":      oi_data.get("total_pe_oi"),
+            "expiry":           oi_data.get("expiry"),
+            "chain_around_atm": chain_rows,
+            "source":           "nse_oi_live",
+        }
+
+    # ── Fallback: Black-Scholes estimated chain ───────────────────────────────
+    chain = _build_estimated_chain(spot_price, atm, strike_interval, symbol)
     return {
-        "atm_strike": float(atm),
-        "spot_price": spot_price,
-        "max_pain": float(atm),
+        "atm_strike":       float(atm),
+        "spot_price":       spot_price,
+        "max_pain":         float(atm),
         "chain_around_atm": chain,
-        "source": "bs_estimated",
+        "source":           "bs_estimated",
     }
 
 

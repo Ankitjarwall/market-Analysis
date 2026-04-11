@@ -1,39 +1,45 @@
-"""
-Application configuration — reads all settings from environment variables.
+﻿"""
+Application configuration - reads all settings from environment variables.
 """
 
+import uuid
 from functools import lru_cache
+
+from pydantic import Field
 from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
-    # ── Database ──
+    # Database
     database_url: str = "postgresql://market_user:market_pass@localhost/market_platform"
     redis_url: str = "redis://localhost:6379/0"
 
-    # ── Auth ──
+    # Auth
     jwt_secret_key: str = "change-me-in-production"
     jwt_algorithm: str = "HS256"
     jwt_expire_minutes: int = 1440  # 24 hours
 
-    # ── Anthropic ──
+    # Anthropic
     anthropic_api_key: str = ""
     claude_model: str = "claude-sonnet-4-6"
 
-    # ── Telegram ──
+    # Telegram
     telegram_bot_token: str = ""
     telegram_chat_ids: str = ""  # comma-separated
 
-    # ── News ──
+    # News
     news_api_key: str = ""
 
-    # ── App ──
+    # App
     environment: str = "development"
     log_level: str = "INFO"
     frontend_url: str = "http://localhost:5173"
     backend_url: str = "http://localhost:8000"
+    app_role: str = "all"  # all|api|market_worker|execution_worker
+    execution_mode: str = "paper"  # paper|live
+    service_instance_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
 
-    # ── Trading Parameters ──
+    # Trading Parameters
     default_capital: float = 200_000
     max_risk_pct: float = 2.0
     max_deploy_pct: float = 20.0
@@ -61,6 +67,10 @@ class Settings(BaseSettings):
     @property
     def is_production(self) -> bool:
         return self.environment == "production"
+
+    @property
+    def is_paper_execution(self) -> bool:
+        return self.execution_mode.lower() != "live"
 
 
 @lru_cache

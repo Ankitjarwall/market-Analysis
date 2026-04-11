@@ -62,6 +62,33 @@ _needs_resubscribe: bool = False
 # Cache for: NFO symbol → token (avoid repeated REST calls)
 _option_token_cache: dict[str, str] = {}
 
+# Per-token price-change callbacks — registered by trade_handler for event-driven monitoring.
+# _option_price_callbacks[token] = list of async callables(token, ltp)
+_option_price_callbacks: dict[str, list] = {}
+_cb_lock = threading.Lock()
+
+
+def register_option_price_callback(token: str, callback: Callable) -> None:
+    """
+    Register an async callback to be fired on every LTP tick for *token*.
+    callback signature: async def cb(token: str, ltp: float) -> None
+    Safe to call from any thread.
+    """
+    with _cb_lock:
+        _option_price_callbacks.setdefault(token, [])
+        if callback not in _option_price_callbacks[token]:
+            _option_price_callbacks[token].append(callback)
+            logger.debug(f"Price callback registered for option token {token}")
+
+
+def unregister_option_price_callback(token: str, callback: Callable) -> None:
+    """Remove a previously registered price callback for *token*."""
+    with _cb_lock:
+        cbs = _option_price_callbacks.get(token, [])
+        if callback in cbs:
+            cbs.remove(callback)
+            logger.debug(f"Price callback unregistered for option token {token}")
+
 
 def is_active() -> bool:
     """Return True if the AngelOne feed is currently connected."""
@@ -339,6 +366,7 @@ def _process_tick(message: Any):
             _live_prices[field] = ltp
 
             # OHLC + VWAP from SnapQuote (all values in paise)
+            ohlc: dict[str, float] = {}
             for msg_key, cache_key in [
                 ("open_price_of_the_day",  f"{field}_today_open"),
                 ("high_price_of_the_day",  f"{field}_today_high"),
@@ -349,7 +377,9 @@ def _process_tick(message: Any):
             ]:
                 raw = message.get(msg_key)
                 if raw:
-                    _live_prices[cache_key] = round(raw / 100.0, 2)
+                    val = round(raw / 100.0, 2)
+                    _live_prices[cache_key] = val
+                    ohlc[msg_key] = val
 
             # Expose Nifty VWAP at top-level key "vwap" for options_analyzer
             if field == "nifty" and f"{field}_vwap" in _live_prices:
@@ -359,11 +389,29 @@ def _process_tick(message: Any):
                 _live_prices["nse_market_active"] = True
             logger.debug(f"AngelOne tick: {field} ₹{ltp}")
 
-        # Option prices
+            # Feed live 5-minute candle buffer for NIFTY / BANKNIFTY
+            if field in ("nifty", "banknifty"):
+                try:
+                    from bot import intraday as _intraday
+                    _intraday.update_live_candle(field.upper(), ltp, ohlc or None)
+                except Exception as _ce:
+                    logger.debug(f"update_live_candle error: {_ce}")
+
+        # Option prices — update cache and fire per-token price callbacks
         elif token in _option_subscriptions:
             _option_prices[token] = ltp
 
-        # Fire async callback on main event loop (thread-safe)
+            # Fire registered async price-change callbacks (event-driven trade monitoring)
+            with _cb_lock:
+                cbs = list(_option_price_callbacks.get(token, []))
+            if cbs and _main_loop and not _main_loop.is_closed():
+                for cb in cbs:
+                    asyncio.run_coroutine_threadsafe(
+                        _safe_option_callback(cb, token, ltp),
+                        _main_loop,
+                    )
+
+        # Fire the global tick callback on main event loop (thread-safe)
         if _on_tick_callback and _main_loop and not _main_loop.is_closed():
             asyncio.run_coroutine_threadsafe(
                 _safe_tick_callback(field or token, ltp, message),
@@ -380,3 +428,11 @@ async def _safe_tick_callback(field: str, price: float, message: dict):
             await _on_tick_callback(field, price, message)
     except Exception as exc:
         logger.debug(f"AngelOne tick callback error: {exc}")
+
+
+async def _safe_option_callback(cb: Callable, token: str, ltp: float):
+    """Safely invoke a single per-token price callback, swallowing exceptions."""
+    try:
+        await cb(token, ltp)
+    except Exception as exc:
+        logger.debug(f"Option price callback error (token={token}): {exc}")

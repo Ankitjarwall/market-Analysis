@@ -290,6 +290,53 @@ def check_call_gates(data: dict) -> GateCheckResult:
     return result
 
 
+def _build_oi_context(chain: dict, best_strike_rec: dict) -> str:
+    """
+    Combine NSE OI chain summary + OI-based best strike recommendation into a
+    compact text block that fits comfortably in the Claude prompt.
+    """
+    lines: list[str] = []
+
+    # Key OI levels
+    max_pain  = chain.get("max_pain")
+    call_wall = chain.get("call_wall")
+    put_wall  = chain.get("put_wall")
+    pcr       = chain.get("pcr")
+
+    if max_pain:
+        lines.append(f"Max Pain: {max_pain}")
+    if call_wall:
+        lines.append(f"Call Wall (resistance): {call_wall}")
+    if put_wall:
+        lines.append(f"Put Wall (support): {put_wall}")
+    if pcr:
+        lines.append(f"PCR: {pcr:.2f}")
+
+    # OI-engine recommendation
+    if best_strike_rec and best_strike_rec.get("strike"):
+        bs = best_strike_rec
+        lines.append(
+            f"\nOI-Recommended Strike: {bs['strike']} {bs.get('option_type','')}"
+            f"  |  LTP ~{bs.get('ltp','?')}  |  OI={bs.get('oi','?')}"
+            f"  |  Score={bs.get('oi_score','?'):.2f}"
+        )
+        lines.append(f"Rationale: {bs.get('rationale','')}")
+
+    # Per-strike OI chain (top 10 by total OI)
+    chain_atm = chain.get("chain_around_atm") or []
+    if chain_atm:
+        lines.append("\nStrike-level OI (CE OI | PE OI | CE LTP | PE LTP):")
+        for row in chain_atm[:10]:
+            strike = row.get("strike", "?")
+            ce_oi  = row.get("CE_oi", 0)
+            pe_oi  = row.get("PE_oi", 0)
+            ce_ltp = row.get("CE_ltp", "?")
+            pe_ltp = row.get("PE_ltp", "?")
+            lines.append(f"  {strike}: CE {ce_oi:,} / PE {pe_oi:,}  LTP {ce_ltp} / {pe_ltp}")
+
+    return "\n".join(lines) if lines else str(chain_atm)[:1800]
+
+
 async def check_and_generate_signal(underlying: str = "NIFTY50"):
     """
     Main entry point — check all gates and generate signal if warranted.
@@ -353,6 +400,10 @@ async def check_and_generate_signal(underlying: str = "NIFTY50"):
     technicals = await get_intraday_technicals(symbol=angel_symbol)
     chain = await get_options_chain_summary(symbol=angel_symbol, spot_price=spot_price)
 
+    # OI-based best strike recommendation (determined after gate checks pass,
+    # so we know the direction before asking the OI engine)
+    from bot.collector import get_best_strike as _get_best_strike
+
     # Gate checks — Bank Nifty uses its own wider-band gates
     if is_bn:
         put_gates = check_put_gates_bn(data)
@@ -377,6 +428,31 @@ async def check_and_generate_signal(underlying: str = "NIFTY50"):
             f"CALL passed={call_gates.passed} failed={call_gates.failed}"
         )
         return
+
+    # ── OI-based best strike selection ──────────────────────────────────────
+    # get_best_strike() expects oi_data["strikes"][int_k] = {CE_oi, PE_oi, …}
+    # Reconstruct that from chain_around_atm rows.
+    _raw_strikes: dict[int, dict] = {}
+    for _row in (chain.get("chain_around_atm") or []):
+        _k = int(_row.get("strike", 0))
+        if _k:
+            _raw_strikes[_k] = {
+                "CE_oi":        _row.get("CE_oi", 0),
+                "PE_oi":        _row.get("PE_oi", 0),
+                "CE_ltp":       _row.get("CE_ltp", 0),
+                "PE_ltp":       _row.get("PE_ltp", 0),
+                "CE_change_oi": _row.get("CE_change_oi", 0),
+                "PE_change_oi": _row.get("PE_change_oi", 0),
+            }
+    _oi_compat = {
+        "strikes":   _raw_strikes,
+        "call_wall": chain.get("call_wall"),
+        "put_wall":  chain.get("put_wall"),
+        "max_pain":  chain.get("max_pain"),
+    }
+    oi_signal_type = "BUY_PUT" if signal_direction == "PUT" else "BUY_CALL"
+    best_strike_rec = _get_best_strike(spot_price, oi_signal_type, _oi_compat, angel_symbol)
+    oi_context = _build_oi_context(chain, best_strike_rec)
 
     # Get active signal rules for prompt context
     async with AsyncSessionLocal() as session:
@@ -444,7 +520,7 @@ async def check_and_generate_signal(underlying: str = "NIFTY50"):
             ema9=technicals.get("ema9") or "N/A",
             ema21=technicals.get("ema21") or "N/A",
             volume_ratio=technicals.get("volume_ratio") or 1.0,
-            options_chain_relevant_strikes=str(chain.get("chain_around_atm", []))[:2000],
+            options_chain_relevant_strikes=oi_context[:2000],
             signal_rules=rules_text or "Default rules active",
             claude_memories=claude_memories,
             vwap_gate="PASS" if (put_gates if signal_direction == "PUT" else call_gates).all_passed else "FAIL",
@@ -475,7 +551,7 @@ async def check_and_generate_signal(underlying: str = "NIFTY50"):
             ema9=technicals.get("ema9") or "N/A",
             ema21=technicals.get("ema21") or "N/A",
             volume_ratio=technicals.get("volume_ratio") or 1.0,
-            options_chain_relevant_strikes=str(chain.get("chain_around_atm", []))[:2000],
+            options_chain_relevant_strikes=oi_context[:2000],
             signal_rules=rules_text or "Default rules active",
             claude_memories=claude_memories,
             min_vix_put=settings.min_vix_for_put,

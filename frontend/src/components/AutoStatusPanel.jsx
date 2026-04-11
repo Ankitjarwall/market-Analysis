@@ -1,5 +1,5 @@
-/**
- * AutoStatusPanel — shows daily auto-trading progress toward the ₹50,000 target.
+﻿/**
+ * AutoStatusPanel - shows daily auto-trading progress toward the Rs50,000 target.
  *
  * Data sources (in priority order):
  *   1. WebSocket AUTO_STATUS_UPDATE events (real-time, pushed on every trade event)
@@ -16,12 +16,11 @@ import { useAuthStore } from '../store/authStore'
 const API = import.meta.env.VITE_API_URL || ''
 
 export default function AutoStatusPanel() {
-  const user      = useAuthStore(s => s.user)
-  const status    = useMarketStore(s => s.autoStatus)
+  const user = useAuthStore(s => s.user)
+  const status = useMarketStore(s => s.autoStatus)
   const setStatus = useMarketStore(s => s.setAutoStatus)
-  const pollRef   = useRef(null)
+  const pollRef = useRef(null)
 
-  // Only active for auto-mode users
   const isAuto = user?.trade_mode === 'auto'
 
   useEffect(() => {
@@ -41,11 +40,20 @@ export default function AutoStatusPanel() {
 
   if (!isAuto || !status) return null
 
-  const { daily_pnl = 0, daily_target = 50000, loss_count = 0, max_losses = 3, waiting_reason, status: state } = status
-  const progressPct  = Math.min(100, Math.round((daily_pnl / daily_target) * 100))
-  const isHalted     = state === 'HALTED'
-  const isTargetMet  = state === 'TARGET_MET'
-  const isActive     = state === 'ACTIVE'
+  const {
+    daily_pnl = 0,
+    daily_target = 50000,
+    loss_count = 0,
+    max_losses = 3,
+    waiting_reason,
+    status: state,
+    execution_mode = 'paper',
+  } = status
+
+  const progressPct = Math.min(100, Math.round((daily_pnl / daily_target) * 100))
+  const isHalted = state === 'HALTED'
+  const isTargetMet = state === 'TARGET_MET'
+  const isActive = state === 'ACTIVE'
 
   const barColor = isHalted
     ? 'bg-red-500'
@@ -56,17 +64,23 @@ export default function AutoStatusPanel() {
         : 'bg-blue-500'
 
   const pnlColor = daily_pnl > 0 ? 'text-green-400' : daily_pnl < 0 ? 'text-red-400' : 'text-gray-300'
+  const execBadgeClass = execution_mode === 'live'
+    ? 'bg-amber-900/60 text-amber-300'
+    : 'bg-sky-900/60 text-sky-300'
+  const execBadgeLabel = execution_mode === 'live' ? 'LIVE EXEC' : 'PAPER EXEC'
 
   return (
     <div className={`rounded-lg border px-4 py-3 ${
-      isHalted    ? 'border-red-500/50 bg-red-950/30' :
+      isHalted ? 'border-red-500/50 bg-red-950/30' :
       isTargetMet ? 'border-green-500/50 bg-green-950/30' :
-                    'border-[#2a2d3a] bg-[#1a1d26]'
+      'border-[#2a2d3a] bg-[#1a1d26]'
     }`}>
-      {/* Header row */}
       <div className="flex items-center justify-between mb-2">
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Auto Trading</span>
+          <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${execBadgeClass}`}>
+            {execBadgeLabel}
+          </span>
           {isActive && (
             <span className="flex items-center gap-1 text-xs text-blue-400">
               <span className="relative flex h-1.5 w-1.5">
@@ -88,15 +102,12 @@ export default function AutoStatusPanel() {
           )}
         </div>
 
-        {/* Loss counter */}
         <div className="flex items-center gap-1">
           {[...Array(max_losses)].map((_, i) => (
             <span
               key={i}
               className={`w-2.5 h-2.5 rounded-full border ${
-                i < loss_count
-                  ? 'bg-red-500 border-red-400'
-                  : 'bg-[#2a2d3a] border-gray-600'
+                i < loss_count ? 'bg-red-500 border-red-400' : 'bg-[#2a2d3a] border-gray-600'
               }`}
               title={i < loss_count ? 'Loss' : 'Slot'}
             />
@@ -107,15 +118,14 @@ export default function AutoStatusPanel() {
         </div>
       </div>
 
-      {/* Daily P&L progress bar */}
       <div className="mb-2">
         <div className="flex items-center justify-between mb-1">
-          <span className="text-xs text-gray-500">Daily P&L</span>
+          <span className="text-xs text-gray-500">Daily P&amp;L</span>
           <div className="flex items-baseline gap-1">
             <span className={`text-sm font-mono font-bold ${pnlColor}`}>
-              {daily_pnl >= 0 ? '+' : ''}₹{Math.abs(daily_pnl).toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+              {daily_pnl >= 0 ? '+' : ''}Rs{Math.abs(daily_pnl).toLocaleString('en-IN', { maximumFractionDigits: 0 })}
             </span>
-            <span className="text-xs text-gray-600">/ ₹{daily_target.toLocaleString('en-IN')}</span>
+            <span className="text-xs text-gray-600">/ Rs{daily_target.toLocaleString('en-IN')}</span>
           </div>
         </div>
         <div className="w-full h-1.5 bg-[#2a2d3a] rounded-full overflow-hidden">
@@ -132,15 +142,14 @@ export default function AutoStatusPanel() {
         </div>
       </div>
 
-      {/* Waiting reason */}
       {waiting_reason && (
         <div className={`flex items-start gap-1.5 text-xs mt-1 ${
-          isHalted    ? 'text-red-300' :
+          isHalted ? 'text-red-300' :
           isTargetMet ? 'text-green-300' :
-                        'text-gray-400'
+          'text-gray-400'
         }`}>
           <span className="mt-0.5 shrink-0">
-            {isHalted ? '🛑' : isTargetMet ? '🎯' : '⏳'}
+            {isHalted ? '!' : isTargetMet ? 'T' : 'i'}
           </span>
           <span>{waiting_reason}</span>
         </div>

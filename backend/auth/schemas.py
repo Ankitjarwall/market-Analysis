@@ -24,6 +24,7 @@ class UserOut(BaseModel):
     role: str
     capital: float
     trade_mode: str
+    auto_settings: dict | None
     telegram_chat_id: str | None
     is_active: bool
     last_login: datetime | None

@@ -1,4 +1,19 @@
-version: "3.9"
+﻿
+x-backend-common: &backend-common
+  build:
+    context: .
+    dockerfile: ./backend/Dockerfile
+  restart: unless-stopped
+  env_file: .env
+  volumes:
+    - ./backend:/app
+    - ./logs:/app/logs
+    - ./data:/app/data
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
 
 services:
   postgres:
@@ -31,24 +46,28 @@ services:
       timeout: 5s
       retries: 5
 
-  backend:
-    build:
-      context: .
-      dockerfile: ./backend/Dockerfile
-    restart: unless-stopped
-    env_file: .env
+  api:
+    <<: *backend-common
+    environment:
+      APP_ROLE: api
+      EXECUTION_MODE: ${EXECUTION_MODE:-paper}
     ports:
       - "8000:8000"
-    volumes:
-      - ./backend:/app
-      - ./logs:/app/logs
-      - ./data:/app/data
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+    command: uvicorn main:app --host 0.0.0.0 --port 8000
+
+  market_worker:
+    <<: *backend-common
+    environment:
+      APP_ROLE: market_worker
+      EXECUTION_MODE: ${EXECUTION_MODE:-paper}
+    command: python -m runtime.market_worker
+
+  execution_worker:
+    <<: *backend-common
+    environment:
+      APP_ROLE: execution_worker
+      EXECUTION_MODE: ${EXECUTION_MODE:-paper}
+    command: python -m runtime.execution_worker
 
   frontend:
     build:
@@ -58,8 +77,9 @@ services:
     ports:
       - "5173:80"
     depends_on:
-      - backend
+      - api
 
 volumes:
   postgres_data:
   redis_data:
+

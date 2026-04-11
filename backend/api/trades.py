@@ -1,37 +1,43 @@
-"""
-Trade journal API endpoints.
-"""
+"""Trade journal and AUTO settings API endpoints."""
 
 import uuid
 from datetime import datetime, timedelta, timezone
+from typing import Any
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from auth.middleware import RequireAnalyst, get_current_user
 from auth.schemas import ChangeCapitalRequest, ChangeTradeModeRequest
-from sqlalchemy.orm import selectinload
-
+from config import settings
 from db.connection import get_db
-from db.models import Signal, Trade, User
+from db.models import Trade, User
+from trading.auto_settings import (
+    diff_auto_settings_from_defaults,
+    get_default_auto_settings,
+    get_user_auto_settings,
+    validate_auto_settings_patch,
+)
 
 _IST = ZoneInfo("Asia/Kolkata")
-_DAILY_TARGET = 50_000
-_MAX_LOSSES   = 3
 
 router = APIRouter(prefix="/api/trades", tags=["trades"])
 
 
 class ExitTradeRequest(BaseModel):
     exit_premium: float
-    exit_reason: str  # TARGET1|TARGET2|STOP_LOSS|MANUAL|EXPIRED
+    exit_reason: str
+
+
+class UpdateAutoSettingsRequest(BaseModel):
+    settings: dict[str, Any] = Field(default_factory=dict)
 
 
 def _trade_dict(trade: Trade) -> dict:
-    """Serialize a trade with its signal data flattened for the frontend."""
     sig = trade.signal
     return {
         "id": trade.id,
@@ -58,8 +64,7 @@ def _trade_dict(trade: Trade) -> dict:
         "charges": trade.charges,
         "net_pnl": trade.net_pnl,
         "net_pnl_pct": trade.net_pnl_pct,
-        "current_premium": None,  # filled by live feed
-        # Signal details — flattened for convenient frontend access
+        "current_premium": None,
         "signal": {
             "id": sig.id if sig else None,
             "signal_type": sig.signal_type if sig else None,
@@ -121,7 +126,7 @@ async def exit_trade(
         raise HTTPException(status_code=400, detail=f"exit_reason must be one of {valid_reasons}")
 
     result = await db.execute(
-        select(Trade).where(Trade.id == trade_id, Trade.user_id == current_user.id)
+        select(Trade).options(selectinload(Trade.signal)).where(Trade.id == trade_id, Trade.user_id == current_user.id)
     )
     trade = result.scalar_one_or_none()
     if not trade:
@@ -129,7 +134,7 @@ async def exit_trade(
     if trade.status not in ("OPEN", "PARTIAL"):
         raise HTTPException(status_code=400, detail=f"Trade is already {trade.status}")
 
-    lot_size = 25  # Nifty
+    lot_size = 15 if trade.signal and trade.signal.underlying == "BANKNIFTY" else 25
     gross_pnl = (body.exit_premium - trade.entry_premium) * trade.lots * lot_size
     charges = _estimate_charges(trade.lots, trade.entry_premium, body.exit_premium, lot_size)
     net_pnl = gross_pnl - charges
@@ -155,7 +160,6 @@ async def pnl_summary(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Return daily/weekly/monthly P&L summary for the current user."""
     now = datetime.now(timezone.utc)
 
     async def _sum_pnl(since: datetime) -> dict:
@@ -195,7 +199,10 @@ async def get_auto_status(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Return today's auto-trading status: daily P&L vs target, loss count, halted flag, waiting reason."""
+    user_settings = get_user_auto_settings(current_user)
+    daily_target = float(user_settings["daily_profit_target"])
+    max_losses = int(user_settings["max_daily_losses"])
+
     now_ist = datetime.now(_IST)
     today_start = datetime(now_ist.year, now_ist.month, now_ist.day, 0, 0, 0, tzinfo=_IST)
 
@@ -225,39 +232,81 @@ async def get_auto_status(
     )
     open_count = int(open_q.scalar() or 0)
 
-    halted     = loss_count >= _MAX_LOSSES
-    target_met = daily_pnl >= _DAILY_TARGET
+    halted = loss_count >= max_losses
+    target_met = daily_pnl >= daily_target
 
     if halted:
-        status         = "HALTED"
-        waiting_reason = f"3 losses today — auto halted for the day to protect capital"
+        status = "HALTED"
+        waiting_reason = f"{max_losses} losses today - auto halted for the day to protect capital"
     elif target_met:
-        status         = "TARGET_MET"
-        waiting_reason = f"Daily target ₹50,000 achieved! Profit today: ₹{daily_pnl:,.0f}"
+        status = "TARGET_MET"
+        waiting_reason = f"Daily target Rs{daily_target:,.0f} achieved! Profit today: Rs{daily_pnl:,.0f}"
     elif open_count > 0:
-        status         = "ACTIVE"
-        waiting_reason = "Trade open — monitoring for T1 / T2 / SL"
+        status = "ACTIVE"
+        waiting_reason = "Trade open - monitoring for T1 / T2 / SL"
     else:
-        status         = "ACTIVE"
-        waiting_reason = "Scanning for entry signals — monitoring market conditions..."
+        status = "ACTIVE"
+        waiting_reason = "Scanning for entry signals - monitoring market conditions..."
 
     return {
-        "trade_mode":    current_user.trade_mode,
-        "daily_pnl":     daily_pnl,
-        "daily_target":  _DAILY_TARGET,
-        "target_met":    target_met,
-        "loss_count":    loss_count,
-        "max_losses":    _MAX_LOSSES,
-        "halted":        halted,
-        "open_count":    open_count,
+        "trade_mode": current_user.trade_mode,
+        "execution_mode": settings.execution_mode,
+        "daily_pnl": daily_pnl,
+        "daily_target": daily_target,
+        "target_met": target_met,
+        "loss_count": loss_count,
+        "max_losses": max_losses,
+        "halted": halted,
+        "open_count": open_count,
         "waiting_reason": waiting_reason,
-        "status":        status,
+        "status": status,
+    }
+
+
+@router.get("/auto-settings")
+async def get_auto_settings(current_user: User = Depends(get_current_user)):
+    defaults = get_default_auto_settings()
+    effective = get_user_auto_settings(current_user)
+    overrides = diff_auto_settings_from_defaults(effective)
+    return {
+        "defaults": defaults,
+        "overrides": overrides,
+        "effective": effective,
+        "trade_mode": current_user.trade_mode,
+        "capital": current_user.capital,
+    }
+
+
+@router.put("/auto-settings")
+async def update_auto_settings(
+    body: UpdateAutoSettingsRequest,
+    current_user: User = Depends(RequireAnalyst),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        patch = validate_auto_settings_patch(body.settings)
+        effective = get_user_auto_settings(current_user)
+        effective.update(patch)
+        current_user.auto_settings = diff_auto_settings_from_defaults(effective) or None
+        current_user.updated_at = datetime.now(timezone.utc)
+        await db.commit()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return {
+        "defaults": get_default_auto_settings(),
+        "overrides": current_user.auto_settings or {},
+        "effective": get_user_auto_settings(current_user),
     }
 
 
 @router.get("/capital")
 async def get_capital(current_user: User = Depends(get_current_user)):
-    return {"capital": current_user.capital, "trade_mode": current_user.trade_mode}
+    return {
+        "capital": current_user.capital,
+        "trade_mode": current_user.trade_mode,
+        "auto_settings": get_user_auto_settings(current_user),
+    }
 
 
 @router.put("/capital")
@@ -266,12 +315,11 @@ async def update_capital(
     current_user: User = Depends(RequireAnalyst),
     db: AsyncSession = Depends(get_db),
 ):
-    # Clamp to prevent absurdly large values (e.g. scientific-notation input)
     clamped = max(10_000, min(10_000_000, int(body.capital)))
     if clamped != body.capital:
         raise HTTPException(
             status_code=400,
-            detail=f"Capital must be between ₹10,000 and ₹1,00,00,000. Got: {body.capital}"
+            detail=f"Capital must be between Rs10,000 and Rs1,00,00,000. Got: {body.capital}",
         )
     current_user.capital = clamped
     current_user.updated_at = datetime.now(timezone.utc)
@@ -292,6 +340,5 @@ async def update_trade_mode(
 
 
 def _estimate_charges(lots: int, entry: float, exit_val: float, lot_size: int) -> float:
-    """Rough estimate: STT + brokerage + exchange fees ~ 0.05% of turnover."""
     turnover = (entry + exit_val) * lots * lot_size
     return round(turnover * 0.0005, 2)

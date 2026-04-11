@@ -29,7 +29,8 @@
       "Bash(ls /mnt/c/Users/ankit-m/Documents/GitHub/market-Analysis/frontend/node_modules/.bin/vite*)",
       "Bash(node.exe /mnt/c/Users/ankit-m/Documents/GitHub/market-Analysis/frontend/node_modules/vite/bin/vite.js build --outDir dist)",
       "Bash(ls /mnt/c/Users/ankit-m/Documents/GitHub/market-Analysis/frontend/dist/assets/*.js)",
-      "Bash(curl -s http://localhost:8000/api/system/status)"
+      "Bash(curl -s http://localhost:8000/api/system/status)",
+      "Bash(rm:*)"
     ]
   }
 }

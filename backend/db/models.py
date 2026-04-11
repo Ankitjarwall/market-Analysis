@@ -1,5 +1,5 @@
 """
-All SQLAlchemy ORM models — single source of truth for the database schema.
+All SQLAlchemy ORM models 窶・single source of truth for the database schema.
 """
 
 import uuid
@@ -26,9 +26,9 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from db.connection import Base
 
 
-# ══════════════════════════════════════════════════════════
+# 笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武
 #  AUTH
-# ══════════════════════════════════════════════════════════
+# 笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武
 
 
 class User(Base):
@@ -54,6 +54,7 @@ class User(Base):
         CheckConstraint("trade_mode IN ('auto','manual')"),
         default="auto",
     )
+    auto_settings: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     telegram_chat_id: Mapped[str | None] = mapped_column(String(50), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     failed_login_attempts: Mapped[int] = mapped_column(Integer, default=0)
@@ -107,9 +108,9 @@ class UserAuditLog(Base):
     )
 
 
-# ══════════════════════════════════════════════════════════
+# 笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武
 #  MARKET DATA
-# ══════════════════════════════════════════════════════════
+# 笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武
 
 
 class DailyMarketSnapshot(Base):
@@ -172,9 +173,9 @@ class DailyMarketSnapshot(Base):
     )
 
 
-# ══════════════════════════════════════════════════════════
+# 笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武
 #  PREDICTIONS
-# ══════════════════════════════════════════════════════════
+# 笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武
 
 
 class Prediction(Base):
@@ -221,9 +222,9 @@ class Prediction(Base):
     )
 
 
-# ══════════════════════════════════════════════════════════
+# 笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武
 #  OPTIONS SIGNALS
-# ══════════════════════════════════════════════════════════
+# 笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武
 
 
 class Signal(Base):
@@ -270,9 +271,9 @@ class Signal(Base):
     trades: Mapped[list["Trade"]] = relationship("Trade", back_populates="signal")
 
 
-# ══════════════════════════════════════════════════════════
+# 笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武
 #  TRADES
-# ══════════════════════════════════════════════════════════
+# 笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武
 
 
 class Trade(Base):
@@ -345,9 +346,9 @@ class Trade(Base):
     )
 
 
-# ══════════════════════════════════════════════════════════
+# 笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武
 #  LEARNING ENGINE
-# ══════════════════════════════════════════════════════════
+# 笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武
 
 
 class TradeLearning(Base):
@@ -426,9 +427,9 @@ class SignalPerformance(Base):
     )
 
 
-# ══════════════════════════════════════════════════════════
+# 笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武
 #  SELF-HEALING
-# ══════════════════════════════════════════════════════════
+# 笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武
 
 
 class Error(Base):
@@ -485,9 +486,9 @@ class SystemHealthLog(Base):
     details: Mapped[dict | None] = mapped_column(JSONB)
 
 
-# ══════════════════════════════════════════════════════════
+# 笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武
 #  PREDICTION MISTAKES
-# ══════════════════════════════════════════════════════════
+# 笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武
 
 
 class PredictionMistake(Base):
@@ -516,15 +517,15 @@ class PredictionMistake(Base):
     )
 
 
-# ══════════════════════════════════════════════════════════
-#  CLAUDE AI MEMORY — persistent context for AI predictions
-# ══════════════════════════════════════════════════════════
+# 笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武
+#  CLAUDE AI MEMORY 窶・persistent context for AI predictions
+# 笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武笊絶武
 
 
 class ClaudeMemory(Base):
     """
     Stores key facts, patterns and rules that Claude needs across sessions.
-    Each entry is a named memory slot — Claude reads these before each analysis
+    Each entry is a named memory slot 窶・Claude reads these before each analysis
     so it has full context without relying on conversation history.
     """
     __tablename__ = "claude_memory"
